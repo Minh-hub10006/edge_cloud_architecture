@@ -15,8 +15,9 @@ q "SELECT * FROM plates WHERE $w capture_time > now() - interval '$minutes minut
 q "SELECT * FROM crowd WHERE $w capture_time > now() - interval '$minutes minutes'" crowd
 q "SELECT * FROM actions WHERE $w capture_time > now() - interval '$minutes minutes'" actions
 copy() {  # the image paths named in one CSV column, at most $3 files
-  python3 -c "import csv,sys; [print(r[sys.argv[2]]) for r in csv.DictReader(open(sys.argv[1])) if r[sys.argv[2]]]" "$1" "$2" \
-    | head -n "$3" | while read -r f; do [[ -f "$f" ]] && cp "$f" "$out/media/"; done
+  # the limit inside python: 13/11 "| head" closed the pipe early, python failed and set -e stopped the export
+  python3 -c "import csv,sys; [print(p) for p in [r[sys.argv[2]] for r in csv.DictReader(open(sys.argv[1])) if r[sys.argv[2]]][:int(sys.argv[3])]]" "$1" "$2" "$3" \
+    | while read -r f; do if [[ -f "$f" ]]; then cp "$f" "$out/media/"; fi; done
 }
 copy "$out/plates.csv" image_path 60
 copy "$out/events.csv" snapshot_path 30
