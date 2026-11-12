@@ -45,7 +45,7 @@ h1{font-size:18px;margin:0 0 12px}#none{color:var(--muted)}
 </style></head><body><h1>Kiểm tra kết quả trong database</h1>
 <p id="none">Không có luồng nào trong 10 giây gần nhất.</p><div id="grid"></div>
 <script>
-const VIDEO_DELAY_MS=1200,TAG=__TAG__;
+const VIDEO_DELAY_MS=2500,TAG=__TAG__;   // 12/11: boxes reach the DB ~0.2-1 s after their frame; slow links add more
 const grid=document.getElementById('grid'),none=document.getElementById('none'),tiles=new Map();
 const color=getComputedStyle(document.documentElement).getPropertyValue('--box').trim();
 const key=s=>[s.node_id,s.camera_id,s.stream_id,s.stream_epoch].join('|');
@@ -100,7 +100,7 @@ function present(v){const now=performance.now();let f=null;
  ctx.lineWidth=Math.max(2,w/400);ctx.font=Math.round(Math.max(16,w/45))+'px system-ui';ctx.strokeStyle=ctx.fillStyle=color;
  for(const b of list){const x=b.x1*w,y=b.y1*h;ctx.strokeRect(x,y,(b.x2-b.x1)*w,(b.y2-b.y1)*h);
  ctx.fillText(`#${b.track_id??'-'} ${b.class_name}`,x+2,Math.max(16,y-4))}}
-refresh();setInterval(refresh,2000);setInterval(()=>tiles.forEach(pull),200);setInterval(()=>tiles.forEach(present),33);
+refresh();setInterval(refresh,2000);setInterval(()=>tiles.forEach(pull),500);setInterval(()=>tiles.forEach(present),33);
 </script></body></html>"""
 
 
@@ -119,13 +119,23 @@ def create_app(connect=None, node_hosts=None):
         import psycopg
         return await psycopg.AsyncConnection.connect(os.environ["DB_DSN"], autocommit=True)
 
+    # 12/11: a new DB connection per request (~50-100 ms with auth over the docker port) and tiles polling 5x/s: with 4
+    # tiles the requests queued up to 1-7 s, boxes arrived after their frame was shown and the page showed none.
+    # Connections are kept and reused (at most POOL at a time); a broken one is dropped.
+    import asyncio
+    idle, slots = [], asyncio.Semaphore(int(os.getenv("CHECK_DB_POOL", "4")))
+
     async def query(*steps):
-        conn = await open_connection()
-        try:
-            async with conn.cursor() as cur:
-                return [await step(cur) for step in steps]
-        finally:
-            await conn.close()
+        async with slots:
+            conn = idle.pop() if idle else await open_connection()
+            try:
+                async with conn.cursor() as cur:
+                    result = [await step(cur) for step in steps]
+            except Exception:
+                await conn.close()
+                raise
+            idle.append(conn)
+            return result
 
     async def page(request):
         return HTMLResponse(PAGE.replace("__TAG__", str(stream_tag(MAIN_KEY))))
