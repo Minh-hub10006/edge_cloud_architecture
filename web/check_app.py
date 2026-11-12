@@ -43,7 +43,8 @@ h1{font-size:18px;margin:0 0 12px}#none{color:var(--muted)}
 .stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block}.stage canvas{pointer-events:none}
 .nums{margin:6px 0 0;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
 </style></head><body><h1>Kiểm tra kết quả trong database</h1>
-<p id="none">Không có luồng nào trong 10 giây gần nhất.</p><div id="grid"></div>
+<p id="none">Không có luồng nào trong 10 giây gần nhất.</p>
+<p id="pick" class="nums"></p><div id="grid"></div>
 <script>
 const VIDEO_DELAY_MS=2500,TAG=__TAG__;   // 12/11: boxes reach the DB ~0.2-1 s after their frame; slow links add more
 const grid=document.getElementById('grid'),none=document.getElementById('none'),tiles=new Map();
@@ -68,7 +69,15 @@ async function play(v,el,url){try{const pc=v.pc=new RTCPeerConnection();pc.addTr
  const a=await fetch(url+'/whep',{method:'POST',headers:{'Content-Type':'application/sdp'},body:pc.localDescription.sdp});
  if(!a.ok)throw new Error('WHEP '+a.status);await pc.setRemoteDescription({type:'answer',sdp:await a.text()})}
  catch(e){v.err=' · video lỗi: '+e.message}}
+// 12/11: every tile is a full 1080x1984 WebRTC stream (several Mbps): 4-5 at once saturated a weak Wi-Fi, the video
+// froze and no box could be drawn. Default: one camera at a time (?only=edge-246/cam-1; ?only=all shows every tile).
+const params=new URLSearchParams(location.search);
 async function refresh(){let list;try{list=await (await fetch('api/streams')).json()}catch(e){return}
+ const ids=list.map(s=>s.node_id+'/'+s.camera_id);let only=params.get('only');if(!only&&ids.length)only=ids[0];
+ const pick=document.getElementById('pick');pick.textContent='Xem: ';
+ for(const id of [...ids,'all']){const a=document.createElement('a');a.href='?only='+encodeURIComponent(id);a.textContent=id===only?'['+id+']':id;
+  a.style.marginRight='12px';pick.append(a)}
+ if(only!=='all')list=list.filter(s=>s.node_id+'/'+s.camera_id===only);
  const seen=new Set(list.map(key));for(const [k,v] of tiles)if(!seen.has(k)){if(v.pc)v.pc.close();v.t.remove();tiles.delete(k)}
  for(const s of list){const k=key(s);if(!tiles.has(k))tiles.set(k,tile(s));const v=tiles.get(k);v.s=s;
   v.n.textContent=`${(s.frames/10).toFixed(1)} khung/s · ${s.boxes.toFixed(1)} box/khung · trễ ${s.latency_ms.toFixed(0)} ms · ${s.mode} · mới nhất ${s.age_s.toFixed(1)} s trước${v.err||''} · khung khớp ${v.hit}, chưa có box ${v.miss}, không đọc được mã ${v.bad}, box đi trước video ${v.lead??'?'} khung`}
