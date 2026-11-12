@@ -34,9 +34,9 @@ def draw_boxes(frame: np.ndarray, boxes: list[dict], color=(0, 255, 0)) -> np.nd
         cv2.rectangle(output, (x1, y1), (x2, y2), color, 2)
     return output
 
-_COCO = {
-    0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
-}
+from inference.detection_decode import COCO_NAMES
+
+_COCO = dict(enumerate(COCO_NAMES))   # all 80 names (13/11: other classes were stored as "cls28", "cls9", ...)
 
 
 def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thr: float = 0.45, top_k: int = 20) -> list[int]:

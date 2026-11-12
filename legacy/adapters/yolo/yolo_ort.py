@@ -14,9 +14,9 @@ from detectors.base import BaseLocalDetector, DetectionResult
 from detectors.dfine.ort_providers import HAS_ORT, create_ort_session, runtime_label
 from vis import draw_boxes
 
-_COCO = {
-    0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck",
-}
+from inference.detection_decode import COCO_NAMES
+
+_COCO = dict(enumerate(COCO_NAMES))   # all 80 names (13/11: other classes were stored as "cls28", "cls9", ...)
 
 
 def resolve_yolo_ultralytics_onnx(name: str = "yolov8n.onnx") -> str:

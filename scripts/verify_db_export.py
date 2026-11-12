@@ -6,7 +6,8 @@ Laptop:     python -B scripts/verify_db_export.py run_export_edge-252 --videos D
 
 Pass gates, per camera:
 1. fast lane: frame_id and media_pts_ns name the same picture on every frame; stored vehicle / person boxes vs an
-   independent detector (YOLO11m) on that picture: >= 50 % on one of its objects (IoU >= 0.5). Models never agree
+   independent detector (YOLO11m) on that picture: >= 50 % on one of its objects (IoU >= 0.5), >= 80 % of those with
+   the same class name. Also printed, no gate: the share of the reference's objects found (a small model finds fewer). Models never agree
    100 %; boxes of another picture or a shifted one score < 20 % (252 before the 13/11 decoder fix: 2-6 %).
 2. UC1: each plate crop is found in its frame (frame_id) by template matching (score >= 0.8) inside the stored box of
    its vehicle (track_id): >= 90 % of the crops.
@@ -63,22 +64,30 @@ def main():
     for (cam, epoch), frames in sorted(runs.items()):
         n = int(cv2.VideoCapture(f"{a.videos}/{video_of[cam]}.mp4").get(cv2.CAP_PROP_FRAME_COUNT))
         agree = sum((round(int(b[0]["media_pts_ns"]) * a.fps / 1e9) - fid) % n == 0 for fid, b in frames.items())
-        hit = total = 0
+        hit = total = same = ref_n = found = 0
         for fid in sorted(frames)[:: max(1, len(frames) // a.frames)][: a.frames]:
             img = picture(cam, fid)
             h, w = img.shape[:2]
-            ref = [b.xyxy[0].tolist() for r in net(img, verbose=False, conf=.25) for b in r.boxes
+            ref = [(b.xyxy[0].tolist(), r.names[int(b.cls)]) for r in net(img, verbose=False, conf=.25) for b in r.boxes
                    if r.names[int(b.cls)] in keep]
-            for r in frames[fid]:
-                if r["class_name"] in keep:
-                    total += 1
-                    box = (float(r["x1"]) * w, float(r["y1"]) * h, float(r["x2"]) * w, float(r["y2"]) * h)
-                    hit += any(iou(box, x) >= .5 for x in ref)
+            mine = [((float(r["x1"]) * w, float(r["y1"]) * h, float(r["x2"]) * w, float(r["y2"]) * h), r["class_name"])
+                    for r in frames[fid] if r["class_name"] in keep]
+            for box, name in mine:
+                total += 1
+                best = max(ref, key=lambda x: iou(box, x[0]), default=None)
+                if best is not None and iou(box, best[0]) >= .5:
+                    hit += 1
+                    same += best[1] == name
+            ref_n += len(ref)   # recall: the reference's objects that one stored box covers
+            found += sum(any(iou(x[0], m[0]) >= .5 for m in mine) for x in ref)
         share = hit / total if total else 0.0
-        ok = agree == len(frames) and share >= .5
+        named = same / hit if hit else 0.0
+        recall = found / ref_n if ref_n else 0.0
+        ok = agree == len(frames) and share >= .5 and named >= .8
         verdict.append(ok)
         print(f"{cam} ({video_of[cam]}, {next(iter(frames.values()))[0]['model_mode']}): {len(frames)} frames, numbering "
-              f"{agree}/{len(frames)}, boxes on an object {share:.0%} of {total} -> {'OK' if ok else 'FAIL'}", flush=True)
+              f"{agree}/{len(frames)}, boxes on an object {share:.0%} of {total}, same class {named:.0%}, the reference's "
+              f"objects found {recall:.0%} -> {'OK' if ok else 'FAIL'}", flush=True)
 
     plates = rows(a.dir, "plates")
     print(f"== UC1 plates: {len(plates)} reads")
