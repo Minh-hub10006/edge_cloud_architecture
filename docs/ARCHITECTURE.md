@@ -24,7 +24,7 @@ Camera ─► Edge Agent (1 tiến trình / camera)
 Cloud 249 ◄──────────────── Kafka ◄──────────────────┘
   ├─ worker làn nhanh (4 tiến trình, cloud_app + grpc_service): vé suy luận → Triton → ByteTrack → kết quả về Edge
   ├─ worker làn sau (slow_worker): UC3 DM-Count, UC4 RTMO-s + ST-GCN++ → bảng + sự kiện
-  ├─ worker OCR biển số (EasyOCR) → bảng plates
+  ├─ worker OCR biển số (16 luồng chuẩn bị dòng chữ → Triton plate_ocr gom lô) → bảng plates
   ├─ Triton: model làn nhanh (ưu tiên 1) + làn sau (ưu tiên 4) dưới bộ giới hạn GPU
   └─ results_writer: mọi topic kết quả → TimescaleDB
 ```
@@ -50,7 +50,7 @@ Edge chỉ chạy **luật** trên box + mã bám (riêng UC1 chạy thêm model
 
 | Việc | UC | Edge | Cloud |
 |---|---|---|---|
-| `plates` | UC1 | YOLOv8n 320 tìm biển trong ảnh xe (ảnh lớn), cắt biển, tối đa 2 lần / xe | EasyOCR đọc chữ → `plates` |
+| `plates` | UC1 | YOLOv8n 320 tìm biển trong ảnh xe (ảnh lớn), cắt biển, tối đa 2 lần / xe | đọc chữ (mạng EasyOCR trên Triton, gom lô các dòng chữ) → `plates` |
 | `count` | UC2/UC3 | đếm người, từng loại xe mỗi 5 s | → `counts` |
 | `congestion` | UC2 | ≥ N xe và phần lớn đứng yên, giữ X s → sự kiện | → `events` |
 | `crowd` | UC3 | đông người → 1 ảnh lớn / 5 s | DM-Count (mật độ, lưới 8x8) → `crowd`, sự kiện khi rất đông |
@@ -74,6 +74,7 @@ Edge chỉ chạy **luật** trên box + mã bám (riêng UC1 chạy thêm model
 | `crowd_density` | UC3 | lô 1, ưu tiên thấp |
 | `pose_rtmo_s` | UC4 | lô ≤ 4, ưu tiên thấp |
 | `action_stgcnpp` | UC4 | lô ≤ 8, ưu tiên thấp |
+| `plate_ocr` | UC1 | lô ≤ 64 dòng chữ, chờ gom ≤ 2 ms, ưu tiên thấp; dòng cùng bề rộng (bội số 64) của mọi camera chạy chung |
 
 - Bộ giới hạn GPU 6 suất: làn nhanh 1 suất/lần chạy (ưu tiên 1); model làn sau chiếm cả 6 suất (chỉ chạy khi GPU rảnh làn nhanh).
 - Hàng đợi làn nhanh tối đa 64 yêu cầu, chờ tối đa 1 s rồi từ chối (không phục vụ muộn).

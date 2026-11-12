@@ -26,8 +26,9 @@ _SHM_MIN_BYTES = 1 << 16
 class TritonSession:
     """Drop-in for the onnxruntime session's run(names, feed) used by CloudDetrAdapter."""
 
-    def __init__(self, model: str, url: str | None = None):
-        self.model, self.url = model, url or os.getenv("TRITON_URL", "localhost:18001")
+    def __init__(self, model: str, url: str | None = None, shm: bool = True):
+        """shm=False: inputs inline in the request (plate_ocr: a new size every call would register a new region)."""
+        self.model, self.url, self.shm = model, url or os.getenv("TRITON_URL", "localhost:18001"), shm
         self._local = threading.local()
         self._regions: list[tuple] = []
         self._lock = threading.Lock()
@@ -73,7 +74,7 @@ class TritonSession:
         for name, x in feed.items():
             x = np.ascontiguousarray(x)
             t = grpcclient.InferInput(name, list(x.shape), _DTYPES[x.dtype])
-            if x.nbytes >= _SHM_MIN_BYTES:
+            if self.shm and x.nbytes >= _SHM_MIN_BYTES:
                 region = st["shm"].get(name)
                 if region is None or region[2] != x.nbytes:
                     key = f"v4_{self.model}_{uuid4().hex[:12]}"

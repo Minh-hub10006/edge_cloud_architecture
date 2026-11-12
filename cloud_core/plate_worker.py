@@ -2,10 +2,13 @@
 
   KAFKA_BOOTSTRAP_SERVERS=localhost:29092 python -m cloud_core.plate_worker --model-home ~/plate_ocr_home --workers 4
 
-Reads edge.plate-crop.v1 (consumer group v4-plate-ocr: start more processes to share the load), runs each crop on a
-pool of OCR processes (one PlateReader on the GPU each, as cloud_core/plate_ocr_service.py), and publishes one message
-per crop on cloud.plate-read.v1, which cloud_core/results_writer stores in table plates. Nothing replies to the Edge:
+Reads edge.plate-crop.v1 (consumer group v4-plate-ocr: start more processes to share the load), reads each crop and
+publishes one message per crop on cloud.plate-read.v1, which cloud_core/results_writer stores in table plates. Nothing replies to the Edge:
 the slow lane does not wait (decision slow-lane-v4).
+
+Backends: triton (default, 13/11): --workers threads prepare line images (inference/plate_ocr_batch.py) and Triton
+model plate_ocr batches the lines of every crop in flight (up to 64, any camera); the texts are EasyOCR's (parity gate:
+scripts/plate_ocr_parity.py). easyocr: the old path, --workers processes with one EasyOCR reader each (no batching).
 """
 from __future__ import annotations
 
@@ -73,7 +76,7 @@ async def serve(bootstrap: str, executor, workers: int) -> None:
         finally:
             slots.release()
 
-    print(f"[plate_worker] reading {CROPS_TOPIC} with {workers} OCR processes", flush=True)
+    print(f"[plate_worker] reading {CROPS_TOPIC} with {workers} OCR workers", flush=True)
     last_log = time_ns()
     try:
         async for message in consumer:
@@ -95,8 +98,25 @@ def main() -> None:
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--passes", type=int, default=3)
     p.add_argument("--cpu", action="store_true")
+    p.add_argument("--backend", choices=("triton", "easyocr"), default="triton")
+    p.add_argument("--triton-model", default="plate_ocr")
     a = p.parse_args()
     from cloud_core.plate_ocr_service import _init, _warm, make_reader
+
+    if a.backend == "triton":
+        from concurrent.futures import ThreadPoolExecutor
+        import cloud_core.plate_ocr_service as service
+        from inference.plate_ocr_batch import BatchPlateReader
+        from inference.triton_detr import TritonSession
+        session = TritonSession(a.triton_model, shm=False)
+        service._reader = BatchPlateReader(lambda x: session.run(["logits"], {"image": x})[0], passes=a.passes)
+
+        async def run_triton():
+            with ThreadPoolExecutor(a.workers) as pool:
+                await serve(os.environ["KAFKA_BOOTSTRAP_SERVERS"], pool, a.workers)
+
+        asyncio.run(run_triton())
+        return
 
     async def run():
         with ProcessPoolExecutor(a.workers, initializer=_init,

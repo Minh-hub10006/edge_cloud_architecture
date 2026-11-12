@@ -23,7 +23,7 @@ FAST="rtdetr_full:2 rtdetr_tail_u8:2 dfinex_full:2 rtdetr_tail:1"
 # every slot (it runs only on an idle GPU, the fast lane waits at most one such run) is the next try.
 # 11/11 P3: RTMO-s (640, ~4x lighter than DM-Count at 1280) batched up to 4, waiting at most 5 ms - to check by measurement.
 # ST-GCN++ (2x100x17x3 skeletons, ~1.4 M parameters) is tiny: batch up to 8.
-SLOW="crowd_density:1:0 pose_rtmo_s:4:5000 action_stgcnpp:8:5000"
+SLOW="crowd_density:1:0 pose_rtmo_s:4:5000 action_stgcnpp:8:5000 plate_ocr:64:2000"   # plate_ocr: UC1 text lines (13/11)
 SLOTS=6                          # executions at a time on the GPU under the rate limiter (4 -> 6 on 12/11, see FAST)
 
 ready() {   # wait until Triton answers and lists every model READY (TensorRT engines build at load: up to ~15 min)
@@ -67,21 +67,32 @@ TRT_CACHE="${TRT_CACHE:-$HOME/triton_trt_cache}"
 # 12/11 FP16 on 249: RT-DETR 674 img/s (ORT FP32 b4 ~313), D-FINE-X 365 (~125), but box agreement vs ORT CPU 0.889 /
 # 0.947 (gate 0.99, b4 also differed from b1): FAIL. TRT_PRECISION=FP32 (TF32 kernels, fused graph) is the next try.
 TRT_PRECISION="${TRT_PRECISION:-FP32}"
-TRT_MODELS="${TRT_MODELS:-}"
-trt_block() {   # name -> optimization + warmup for a model listed in TRT_MODELS (RT-DETR IO: images + orig_target_sizes)
+# Unset = the models whose config has TensorRT now (13/11: add / queue rewrote every config with TRT_MODELS empty, so
+# adding a model silently put RT-DETR and D-FINE-X back on ONNX Runtime). trt-off sets it to "" explicitly.
+TRT_MODELS="${TRT_MODELS-$(grep -l '"tensorrt"' "$repo"/*/config.pbtxt 2>/dev/null | xargs -r -n1 dirname | xargs -r -n1 basename | tr '\n' ' ')}"
+trt_block() {   # name -> optimization + warmup for a model listed in TRT_MODELS
   [[ " $TRT_MODELS " == *" $1 "* ]] || return 0
+  local lo opt hi warm
+  if [[ $1 == crowd_density ]]; then   # DM-Count: one 1280x1280 image (batch 1, 13/11)
+    lo="image:1x3x1280x1280"; opt="$lo"; hi="$lo"
+    warm='model_warmup [ { name: "batch1" batch_size: 1
+  inputs { key: "image" value: { data_type: TYPE_FP32 dims: [ 3, 1280, 1280 ] zero_data: true } } } ]'
+  else                                 # RT-DETR / D-FINE-X: images + orig_target_sizes, batch 1-4
+    lo="images:1x3x640x640,orig_target_sizes:1x2"; opt="images:4x3x640x640,orig_target_sizes:4x2"; hi="$opt"
+    warm='model_warmup [ { name: "batch4" batch_size: 4
+  inputs { key: "images" value: { data_type: TYPE_FP32 dims: [ 3, 640, 640 ] zero_data: true } }
+  inputs { key: "orig_target_sizes" value: { data_type: TYPE_INT64 dims: [ 2 ] zero_data: true } } } ]'
+  fi
   cat <<EOT
 optimization { execution_accelerators { gpu_execution_accelerator : [ { name : "tensorrt"
   parameters { key: "precision_mode" value: "$TRT_PRECISION" }
   parameters { key: "max_workspace_size_bytes" value: "4294967296" }
   parameters { key: "trt_engine_cache_enable" value: "1" }
   parameters { key: "trt_engine_cache_path" value: "/trt_cache/$1_$TRT_PRECISION" }
-  parameters { key: "trt_profile_min_shapes" value: "images:1x3x640x640,orig_target_sizes:1x2" }
-  parameters { key: "trt_profile_opt_shapes" value: "images:4x3x640x640,orig_target_sizes:4x2" }
-  parameters { key: "trt_profile_max_shapes" value: "images:4x3x640x640,orig_target_sizes:4x2" } } ] } }
-model_warmup [ { name: "batch4" batch_size: 4
-  inputs { key: "images" value: { data_type: TYPE_FP32 dims: [ 3, 640, 640 ] zero_data: true } }
-  inputs { key: "orig_target_sizes" value: { data_type: TYPE_INT64 dims: [ 2 ] zero_data: true } } } ]
+  parameters { key: "trt_profile_min_shapes" value: "$lo" }
+  parameters { key: "trt_profile_opt_shapes" value: "$opt" }
+  parameters { key: "trt_profile_max_shapes" value: "$hi" } } ] } }
+$warm
 EOT
 }
 
@@ -97,6 +108,7 @@ dynamic_batching {
   default_queue_policy { max_queue_size: 256 default_timeout_microseconds: 10000000 timeout_action: REJECT allow_timeout_override: true }
 }
 instance_group [ { count: 1 kind: KIND_GPU gpus: [ 0 ]$(limiter 4 $SLOTS) } ]
+$(trt_block "$1")
 EOF
 }
 

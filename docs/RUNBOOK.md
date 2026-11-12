@@ -20,19 +20,22 @@ bash scripts/run_results_v4.sh db                 # lần đầu: tạo mật kh
 bash scripts/triton_config_v4.sh trt              # Triton: cấu hình làn nhanh + TensorRT FP32 (biên dịch 5-15 phút lần đầu)
 RTDETR_SPLIT_HEAD_ID=rtl2-w8a8pc,rtl2-onnx-fp32 bash scripts/run_cloud_v4.sh start 4   # 4 worker làn nhanh
 bash scripts/run_slow_v4.sh start                 # worker làn sau (UC3, UC4)
-bash scripts/run_plate_v4.sh start 4              # OCR biển số (EasyOCR, PLATE_OCR_PYTHON)
+bash scripts/run_plate_v4.sh start                # OCR biển số: 16 luồng, Triton plate_ocr gom lô (PLATE_OCR_BACKEND=easyocr: cách cũ)
 bash scripts/run_results_v4.sh start              # ghi DB
 ```
 Dừng: `run_cloud_v4.sh stop`, `run_slow_v4.sh stop`, `run_plate_v4.sh stop`, `run_results_v4.sh stop` (Kafka, Triton, DB để chạy).
 
 Kiểm tra nhanh:
 ```bash
-echo "fast $(pgrep -fc 'v4-cloud|cloud_core.worker') slow $(pgrep -fc v4-slow-worker) ocr $(pgrep -fc v4-plate-ocr) writer $(pgrep -fc v4-results-writer)"   # 4 1 5 1
+echo "fast $(pgrep -fc 'v4-cloud|cloud_core.worker') slow $(pgrep -fc v4-slow-worker) ocr $(pgrep -fc v4-plate-ocr) writer $(pgrep -fc v4-results-writer)"   # 4 1 1 1
 docker ps --format '{{.Names}} {{.Status}}' | grep v4-                     # kafka, triton, tsdb: Up
-curl -s -X POST localhost:18000/v2/repository/index | grep -o '"state":"READY"' | wc -l   # 7
+curl -s -X POST localhost:18000/v2/repository/index | grep -o '"state":"READY"' | wc -l   # 8 (7 + plate_ocr)
 ```
 
 Triton (`scripts/triton_config_v4.sh`): `show` | `trt [MODELS]` | `trt-off` | `ratelimit` | `add NAME ONNX` | `restore DIR`.
+OCR biển số (`plate_ocr`, ONNX từ `scripts/plate_ocr_parity.py export`): `add plate_ocr plate_ocr.onnx`, rồi kiểm chữ giống EasyOCR:
+`scripts/plate_ocr_parity.py parity --model-home ~/plate_ocr_home --crops <thư mục ảnh biển> --backend triton` (cổng ≥ 99,4 %:
+chính EasyOCR chạy CPU so với GPU cũng chỉ khớp 521/524 vì sai số phần cứng).
 Mỗi lệnh sao lưu cấu hình cũ (`~/triton_config_backup_*`). Bản biên dịch TensorRT ở `~/triton_trt_cache` (giữ qua lần tạo lại container).
 Kiểm độ khớp sau mỗi thay đổi model / độ chính xác (cổng: "Triton GPU vs ORT CPU" ≥ 0,99):
 ```bash
@@ -63,7 +66,7 @@ bash scripts/run_edge_v4.sh 247 "vn9:N vn6:A vn9:B vn6:C vn9:D" 180
 | Máy | File | Ghi chú |
 |---|---|---|
 | 249 | `~/triton_repo_20261105/<model>/1/model.onnx`: `rtdetr_full`, `rtdetr_tail_u8`, `rtdetr_tail`, `dfinex_full`, `crowd_density` (DM-Count, ONNX sha `ac90db17…`), `pose_rtmo_s` (RTMO-s, sha `d0703d40…`), `action_stgcnpp` (ST-GCN++ NTU60, sha `f966b4d4…`) | `add NAME ONNX` để thêm model làn sau |
-| 249 | `~/plate_ocr_home` (EasyOCR + mạng `plate`), `~/.v4_db.env` | mật khẩu DB chỉ ở file này |
+| 249 | `~/plate_ocr_home` (EasyOCR + mạng `plate`), `~/triton_repo_20261105/plate_ocr/1/model.onnx` (cùng trọng số, sha `0e972566…`), `~/.v4_db.env` | mật khẩu DB chỉ ở file này |
 | 246 | `~/edge_artifacts/npu243/yolov8n_320_int8_split_traffic100.dlc`; YOLO11s `yolo11s320_w8a8_qcs6490.dlc` + daemon `snpe-daemon-yolo11s-v3` (đường dẫn trong `scripts/hosts/edge-246.sh`); `~/edge_b_20261106/head_w8a8_pc.dlc` (nửa đầu B); `~/plate_ocr_home/edge/plate_yolov8n_320_int8_split.dlc`; QAIRT `~/sigm/qairt/2.43.0.260128` | |
 | 252 | `~/edge_artifacts/npu243_prepared/yolov8n_320_int8_split_traffic100.dlc` (graph `yolov8n_320_split`); `~/edge_artifacts/npu243/yolo11s320_w8a8_qcs6490_dual.dlc`; `/root/edge_b_20261106/head_w8a8_pc.dlc` (cùng file 246, đã có cache QCS6490); `~/plate_ocr_home/edge/plate_yolov8n_320_int8_split_qcs6490.dlc` (graph `plate_320_split_fp32`); `/root/v4_pydeps` (torch, ultralytics, scipy, lap) | daemon v3 theo tên đồ thị |
 | 247 | `~/edge_artifacts/onnx/yolov8n_320_split.onnx`, `yolo11s320_float.onnx`; `~/edge_b_20261106/head.onnx`; `~/plate_ocr_home/edge/plate_yolov8n_320_split.onnx` | ONNX Runtime CUDA |
