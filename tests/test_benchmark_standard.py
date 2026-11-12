@@ -82,6 +82,34 @@ class LoopSourceTests(unittest.TestCase):
         self.assertTrue(all(b > a for a, b in zip(pts, pts[1:])))
 
 
+class LateConsumerSourceTests(unittest.TestCase):
+    def test_a_late_consumer_gets_the_newest_frame_and_numbers_keep_the_files(self):
+        # 12/11 on 252: analytics at 9-14 fps read the 15 fps file frame by frame and fell 3-21 s behind the video
+        cv2 = __import__("cv2")
+        import numpy as np
+        from media.opencv_source import OpenCVFrameSource
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "clip.avi")
+            writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"MJPG"), 50, (64, 48))
+            for i in range(60):
+                writer.write(np.full((48, 64, 3), i * 4, np.uint8))
+            writer.release()
+
+            async def read():
+                source = OpenCVFrameSource(path, node_id="n", camera_id="c", stream_id="s", max_frames=60)
+                ids = []
+                async for frame in source:
+                    ids.append(frame.identity.source_frame_id)
+                    await asyncio.sleep(0.05)   # 20 fps consumer, 50 fps file
+                return source, ids
+            source, ids = asyncio.run(read())
+        self.assertGreater(source.frames_skipped, 20)
+        self.assertLess(len(ids), 40)
+        self.assertEqual(ids, sorted(set(ids)))               # increasing, never repeated
+        self.assertLess(ids[-1], 60)
+        self.assertEqual(len(ids) + source.frames_skipped, ids[-1] + 1)   # every number is the file's own
+
+
 class StartFrameSourceTests(unittest.TestCase):
     def test_start_frame_skips_into_the_clip_and_loops_back_to_its_start(self):
         cv2 = __import__("cv2")

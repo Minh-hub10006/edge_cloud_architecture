@@ -43,6 +43,7 @@ class OpenCVFrameSource:
         # Frame IDs and PTS keep increasing; the content repeats.
         self.loop = loop
         self.loops_completed = 0
+        self.frames_skipped = 0   # realtime file: frames dropped to stay on the clock, like a live camera
         # v4 (7/11): a GStreamer hardware decoder (media/hw_capture.py), pixel-identical to OpenCV; None = OpenCV on the CPU.
         self.decoder = decoder
         # 8/11: with a decoder, also resize on the GPU to hw_size x hw_size (stretched); 0 = full frames.
@@ -120,12 +121,26 @@ class OpenCVFrameSource:
 
                 reader = threading.Thread(target=run_reader, name="frame-prefetch", daemon=True)
                 reader.start()
+            period_ns = 1_000_000_000 / source_fps
             while self.max_frames is None or frame_id < self.max_frames:
                 if is_file and self.realtime_file:
-                    due_ns = started_mono_ns + round(frame_id * 1_000_000_000 / source_fps)
+                    due_ns = started_mono_ns + round(frame_id * period_ns)
                     delay_ns = due_ns - monotonic_ns()
                     if delay_ns > 0:
                         await asyncio.sleep(delay_ns / 1_000_000_000)
+                    elif reader is None and -delay_ns > 2 * period_ns:
+                        # 12/11 on 252 (overloaded): the file was read frame by frame at 9-14 fps while the main stream
+                        # played at 15, so analytics fell 3-21 s behind the video and no box matched its frame. A live
+                        # camera gives the newest frame: drop the late ones (their numbers still count).
+                        late = int(-delay_ns // period_ns) - 1
+                        for _ in range(late):
+                            if self.max_frames is not None and frame_id + 1 >= self.max_frames:
+                                break
+                            ok, *_ = await asyncio.to_thread(read_next, frame_id)
+                            if not ok:
+                                break
+                            frame_id += 1
+                            self.frames_skipped += 1
                 if reader is None:
                     ok, pixels, file_pts_ms, hires = await asyncio.to_thread(read_next, frame_id)
                     captured_mono_ns, captured_utc_ns = monotonic_ns(), time_ns()

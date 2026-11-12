@@ -64,7 +64,9 @@ class CopyPublisher:
             raise RuntimeError(f"FFmpeg exited with {self._process.returncode}: {self.error_tail}")
         seq = self.frames_submitted
         self.frames_submitted += 1
-        file_frame = round(self.start_s * self.profile.fps) + seq
+        # the frame's own number in the file, not how many were published: 12/11 a source that drops late frames (an
+        # overloaded Edge) would otherwise draw frame k's boxes on a later frame of the video
+        file_frame = round(self.start_s * self.profile.fps) + frame.identity.source_frame_id
         if self.loop_frames > 0:
             file_frame %= self.loop_frames
         reference = MediaFrameRef(frame=frame.identity, encoded_seq=seq,

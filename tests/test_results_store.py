@@ -148,18 +148,19 @@ class CopyPublisherTests(unittest.IsolatedAsyncioTestCase):
         from types import SimpleNamespace
         seen = []
         pub = self.publisher(seen)
-        frame = SimpleNamespace(identity=FRAME)
-        await pub.publish(frame)
-        await pub.publish(frame)
+        from dataclasses import replace
+        frame = lambda k: SimpleNamespace(identity=replace(FRAME, source_frame_id=k))
+        await pub.publish(frame(0))
+        await pub.publish(frame(1))
         self.assertEqual([r.encoded_seq for r in seen], [0, 1])
         self.assertEqual(seen[1].media_pts_ns, round(1e9 / 15))
         pub.start_s = 10.0  # a run started at file frame 150: its boxes carry the number in the video's band
-        await pub.publish(frame)
-        self.assertEqual(seen[2].media_pts_ns, round(152 * 1e9 / 15))
+        await pub.publish(frame(5))   # frames 2-4 were dropped by a late source: the video's frame 155, not 152
+        self.assertEqual(seen[2].media_pts_ns, round(155 * 1e9 / 15))
         self.assertEqual(pub.frames_submitted, 3)
         pub._process.returncode = 1
         with self.assertRaisesRegex(RuntimeError, "FFmpeg exited"):
-            await pub.publish(frame)
+            await pub.publish(frame(6))
 
     async def test_a_looping_run_loops_the_file_and_wraps_its_frame_numbers(self):
         # 11/11: 180 s runs over 140 s files ended every agent when the main-stream FFmpeg reached the end
@@ -170,8 +171,9 @@ class CopyPublisherTests(unittest.IsolatedAsyncioTestCase):
         seen = []
         pub = self.publisher(seen)
         pub.loop_frames, pub.start_s = 4, 2 / 15   # a 4-frame file, started at its frame 2
-        for _ in range(4):
-            await pub.publish(SimpleNamespace(identity=FRAME))
+        from dataclasses import replace
+        for k in range(4):
+            await pub.publish(SimpleNamespace(identity=replace(FRAME, source_frame_id=k)))
         self.assertEqual([round(r.media_pts_ns * 15 / 1e9) for r in seen], [2, 3, 0, 1])
 
 
