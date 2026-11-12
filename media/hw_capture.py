@@ -228,16 +228,23 @@ class HwCapture:
 
     def _start(self) -> None:
         self._buf = bytearray(self.frame_bytes)  # reused for every frame: nv12_to_bgr copies it into the frame
-        cmd, pass_fds, hires_read = ["gst-launch-1.0", "-e", "-q", *self.chain, "!", "fdsink", "fd=1"], (), None
+        # Frames go through their own pipe, never stdout: 13/11 on 252 qtic2vdec's library printed 64 KiB of log lines
+        # ("QC2TargetSpec: Video Core Features...") to stdout ahead of the frames; every picture the model got was moved
+        # by 65536 bytes (colours rotated, last 34 rows lost) and every box on 252 was wrong. Library logs -> /dev/null.
+        frames_read, frames_write = os.pipe()
+        cmd, pass_fds, hires_read = (["gst-launch-1.0", "-e", "-q", *self.chain, "!", "fdsink", f"fd={frames_write}"],
+                                     (frames_write,), None)
         if self.hires_every:
             hires_read, hires_write = os.pipe()
             cmd = ["gst-launch-1.0", "-e", "-q", *self.head, "!", "tee", "name=t",
-                   "t.", "!", "queue", *self.chain[len(self.head):], "!", "fdsink", "fd=1",
+                   "t.", "!", "queue", *self.chain[len(self.head):], "!", "fdsink", f"fd={frames_write}",
                    "t.", "!", "queue", "!", "videorate", "drop-only=true", f"max-rate={self.hires_rate}",
                    *self.hires_chain, "!", "fdsink", f"fd={hires_write}"]
-            pass_fds = (hires_write,)
-        self._proc = subprocess.Popen(cmd, env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            pass_fds = (frames_write, hires_write)
+        self._proc = subprocess.Popen(cmd, env=SYSTEM_ENV, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                       pass_fds=pass_fds, preexec_fn=_interrupt_when_parent_dies)
+        os.close(frames_write)   # the child holds it; EOF when the pipeline ends
+        self._proc.stdout = os.fdopen(frames_read, "rb", buffering=0)   # read / skip / stop_gracefully read it as before
         threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True).start()
         self.index = 0
         if hires_read is not None:
