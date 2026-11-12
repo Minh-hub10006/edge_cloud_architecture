@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: edge_video_platform
+    metrics_path: /
+    static_configs:
+      # Replace/add Edge targets. Runner must use --monitor --metrics-port=9108.
+      - targets: ["192.168.180.246:9108"]

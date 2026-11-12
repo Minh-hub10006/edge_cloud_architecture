@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edge-video-platform"
+version = "0.1.0"
+description = "Independent multi-node edge-cloud video analytics platform"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "grpcio>=1.71.2",
+    "grpcio-tools>=1.71.2",
+    "protobuf>=5.29.0",
+    "starlette>=0.36",
+    "httpx>=0.27",
+]
+cloud = [
+    "starlette>=0.36",
+    "uvicorn>=0.27",
+    "httpx>=0.27",
+    "grpcio>=1.71.2",
+    "protobuf>=5.29.0",
+    "av>=12",
+    "aiokafka>=0.10",
+    "zstandard>=0.22",
+]
+edge = [
+    "grpcio>=1.71.2",
+    "protobuf>=5.29.0",
+    "aiokafka>=0.10",
+    "zstandard>=0.22",
+]
+kafka = ["aiokafka>=0.10"]
+triton = ["tritonclient[grpc]>=2.40", "zstandard>=0.22"]
+monitor = ["prometheus-client>=0.20"]
+benchmark = ["psutil>=5.9"]
+detectors-cloud = ["numpy>=1.24", "Pillow>=10", "onnxruntime-gpu>=1.18", "onnx>=1.18"]
+detectors-edge = ["numpy>=1.24", "opencv-python-headless>=4.8"]
+
+[tool.setuptools.packages.find]
+include = ["benchmark*", "cloud_core*", "contracts*", "edge_agent*", "inference*", "legacy*", "media*", "web*"]
+
+[tool.setuptools.package-data]
+"contracts.proto" = ["*.proto"]
+"media" = ["*.yml"]
+"web" = ["*.js"]
+"benchmark" = ["configs/*.json"]
+
+[tool.unittest]
+start-directory = "tests"

@@ -1,0 +1,14 @@
+# Local POC profile. Set webrtcAdditionalHosts to the Cloud host/IP for remote viewers.
+logLevel: info
+rtsp: true
+rtspTransports: [tcp]
+rtspAddress: :8554
+webrtc: true
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1]
+# Only the addresses given above (the launcher sets MTX_WEBRTCADDITIONALHOSTS to the host's LAN IP): advertising
+# every interface (Docker bridge 172.17.0.1, loopback) made browsers pick an unroutable pair and drop after ~8 s.
+webrtcIPsFromInterfaces: no
+paths:
+  all_others:

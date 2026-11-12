@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package edge_video_platform.v1;
+
+message FrameIdentity {
+  string node_id = 1;
+  string camera_id = 2;
+  string stream_id = 3;
+  uint64 stream_epoch = 4;
+  uint64 source_frame_id = 5;
+  uint64 capture_utc_ns = 6;
+  uint64 source_pts = 7;
+}
+
+message MediaFrameRef {
+  uint32 schema_version = 1;
+  FrameIdentity frame = 2;
+  uint64 encoded_seq = 3;
+  uint64 media_pts_ns = 4;
+  uint64 submitted_utc_ns = 5;
+}
+
+enum ModelMode {
+  MODEL_MODE_UNSPECIFIED = 0;
+  YOLO_EDGE = 1;
+  RTMDET_EDGE = 2;
+  DFINE_CLOUD = 3;
+  RTDETR_CLOUD = 4;
+  LWDETR_CLOUD = 5;
+  YOLO11S_EDGE = 6;
+  DFINEX_CLOUD = 7;
+  RTDETR_SPLIT_CLOUD = 8;
+}
+
+message Box {
+  float left = 1;
+  float top = 2;
+  float right = 3;
+  float bottom = 4;
+  float confidence = 5;
+  int32 class_id = 6;
+  string class_name = 7;
+  optional int64 track_id = 8;
+  optional float calibrated_confidence = 9;
+}
+
+message DetectionResult {
+  uint32 schema_version = 1;
+  FrameIdentity frame = 2;
+  ModelMode model_mode = 3;
+  string model_id = 4;
+  string decision_id = 5;
+  repeated Box boxes = 6;
+  double inference_ms = 7;
+  uint64 produced_utc_ns = 8;
+  string request_id = 9;
+  optional uint64 preview_pts = 10;
+  optional string confidence_calibration_id = 13;
+  bytes attributes_json = 14;
+}
+
+message CloudInferenceTicket {
+  uint32 schema_version = 1;
+  FrameIdentity frame = 2;
+  ModelMode model_mode = 3;
+  string model_id = 4;
+  string decision_id = 5;
+  uint64 preview_pts = 6;
+  uint64 deadline_utc_ns = 7;
+  string request_id = 8;
+  // JPEG of the analytics frame (CLOUD_FRAME_SOURCE=jpeg); empty = Cloud reads its RTSP cache.
+  bytes jpeg = 9;
+  // Path B: packed cut tensor (contracts/cut_tensor.py) instead of pixels.
+  bytes tensor = 10;
+}
+
+message RpcAck {
+  string status = 1;
+  string message = 2;
+}
+
+message DetectionReply {
+  string status = 1;
+  DetectionResult result = 2;
+  string message = 3;
+}
+
+service EdgeCloudDataPlane {
+  // Media remains a straight RTSP path; this is only its compact identity sidecar.
+  rpc PublishMediaFrameRef(MediaFrameRef) returns (RpcAck);
+  // Local Edge detections are normalized and sent to the same Cloud Result Hub.
+  rpc SubmitDetectionResult(DetectionResult) returns (RpcAck);
+  // Cloud inference tickets point at frames already decoded from the RTSP path.
+  rpc SubmitCloudInference(CloudInferenceTicket) returns (DetectionReply);
+}
+
+message WindowStateFeedback {
+  uint32 schema_version = 1;
+  string node_id = 2;
+  string camera_id = 3;
+  string stream_id = 4;
+  uint64 stream_epoch = 5;
+  uint64 window_id = 6;
+  uint64 first_frame_id = 7;
+  uint64 last_frame_id = 8;
+  uint64 feedback_utc_ns = 9;
+  reserved 10, 11;
+  double box_change_mean = 12;
+  double tracking_stability = 13;
+  uint32 cloud_queue_depth = 14;
+  double cloud_p95_inference_ms = 15;
+  double cloud_gpu_utilization_pct = 16;
+  double transport_rtt_ms = 17;
+  double drop_ratio = 18;
+  double media_bitrate_mbps = 19;
+  string decision_id = 20;
+  string model_id = 21;
+  optional double blur_difficulty_mean = 22;
+  optional double calibrated_confidence_mean = 23;
+}
+
+message RouteState {
+  uint32 schema_version = 1;
+  string node_id = 2;
+  string camera_id = 3;
+  string stream_id = 4;
+  uint64 stream_epoch = 5;
+  uint64 window_id = 6;
+  string decision_id = 7;
+  ModelMode model_mode = 8;
+  double target_fps = 9;
+  uint64 effective_from_frame_id = 10;
+  uint64 committed_utc_ns = 11;
+}

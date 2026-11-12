@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "description": "Reference topology; validate then manually launch matching coordinate and pipeline CLI workers",
+  "nodes": [
+    {"node_id": "edge-246", "host": "192.168.180.246", "camera_id": "traffic-01", "video": "/home/ubuntu/edge_multimodel/videos/clips_1min/traffic_1min.mp4"}
+  ],
+  "cloud": {"node_id": "cloud-249", "host": "192.168.180.249", "grpc_target": "192.168.180.249:50061", "rtsp_base": "rtsp://192.168.180.249:8554"},
+  "kafka_bootstrap": "192.168.180.95:9092",
+  "cases": [
+    {"model_key": "yolov8n_320_int8_split_traffic100", "placement": "edge", "profile": "realtime", "transport": "grpc"},
+    {"model_key": "yolov8n_320_int8_split_traffic100", "placement": "edge", "profile": "realtime", "transport": "kafka"},
+    {"model_key": "dfine_full", "placement": "cloud", "profile": "realtime", "transport": "grpc"},
+    {"model_key": "dfine_full", "placement": "cloud", "profile": "realtime", "transport": "kafka"}
+  ]
+}

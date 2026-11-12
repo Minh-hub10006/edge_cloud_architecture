@@ -1,0 +1,9 @@
+{
+  "_comment": "P2 level-4 test only (10/11): thresholds lowered so the test videos trigger every rule. Real cameras use edge_agent defaults (crowd 30 people, gathering 5 for 30 s, congestion 30 vehicles for 30 s).",
+  "default": {
+    "tasks": ["count", "congestion", "crowd", "gathering"],
+    "config": {"crowd_persons": 8, "crowd_overlap_min_persons": 4, "gathering_persons": 3, "gathering_hold_s": 10,
+               "gathering_gap": 3.0, "congestion_vehicles": 5, "congestion_hold_s": 10,
+               "congestion_stationary_share": 0.3}
+  }
+}

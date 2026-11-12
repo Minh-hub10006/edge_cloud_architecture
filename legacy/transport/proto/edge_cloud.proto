@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package edgecloud;
+
+// Canonical proto — see docs/COMMUNICATION_PROTOCOL.md
+// Generate (from edge_multimodel root):
+//   python -m grpc_tools.protoc -Icomm/proto --python_out=. --grpc_python_out=. comm/proto/edge_cloud.proto
+
+service EdgeCloudService {
+  // Plane 1: feature upload + inference feedback (bidirectional stream)
+  rpc StreamFeatures(stream FeaturePacket) returns (stream CloudFeedback);
+
+  // Plane 3: global RL state (20 nodes x 6 metrics)
+  rpc GetGlobalState(Empty) returns (GlobalState);
+  rpc ReportNodeState(NodeStateReport) returns (Ack);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Plane 2: learning
+  rpc UploadTrajectory(TrajectoryBatch) returns (Ack);
+  rpc GetPolicyUpdate(PolicyRequest) returns (PolicyWeights);
+}
+
+// ── Plane 1: vision data ─────────────────────────────────────
+
+message TensorMeta {
+  repeated int32 shape = 1;
+  string dtype = 2;          // "float32"
+  string layout = 3;         // "C" | "tier1_flat"
+  string compression = 4;    // "none" | "gzip"
+}
+
+message FeaturePacket {
+  string frame_id = 1;
+  string node_id = 2;
+  bytes payload = 3;
+  TensorMeta meta = 4;
+  int64 sent_at_ms = 5;
+}
+
+message Detection {
+  int32 class_id = 1;
+  float score = 2;
+  float x1 = 3;
+  float y1 = 4;
+  float x2 = 5;
+  float y2 = 6;
+}
+
+message CloudFeedback {
+  string frame_id = 1;
+  string node_id = 2;
+  string matched_id = 3;
+  float cloud_usage = 4;
+  float decode_ms = 5;
+  int64 recv_at_ms = 6;
+  repeated Detection detections = 7;
+}
+
+// ── Plane 3: control / telemetry ─────────────────────────────
+
+message NodeStateProto {
+  float bandwidth = 1;
+  float latency = 2;
+  float queue_norm = 3;
+  float u_edge = 4;
+  float u_cloud = 5;
+  float t_process_ms = 6;
+}
+
+message GlobalState {
+  repeated NodeStateProto nodes = 1;
+  float u_cloud = 2;
+  int64 updated_at_ms = 3;
+}
+
+message NodeStateReport {
+  string node_id = 1;
+  NodeStateProto state = 2;
+  int64 timestamp_ms = 3;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  int64 sent_at_ms = 2;
+}
+
+message HeartbeatResponse {
+  int64 server_at_ms = 1;
+  float u_cloud = 2;
+}
+
+// ── Plane 2: RL learning ─────────────────────────────────────
+
+message TrajectoryStep {
+  string node_id = 1;
+  repeated float state_local = 2;
+  int32 mode = 3;
+  int32 fps_idx = 4;
+  float reward = 5;
+  float log_prob = 6;
+  int64 timestamp_ms = 7;
+}
+
+message TrajectoryBatch {
+  repeated TrajectoryStep steps = 1;
+}
+
+message PolicyRequest {
+  string node_id = 1;
+  int64 current_version = 2;
+}
+
+message PolicyWeights {
+  bytes weights = 1;
+  int64 version = 2;
+  string checksum_sha256 = 3;
+}
+
+message Ack {
+  bool ok = 1;
+  string message = 2;
+}
+
+message Empty {}
