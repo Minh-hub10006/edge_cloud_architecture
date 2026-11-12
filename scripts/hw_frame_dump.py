@@ -11,7 +11,7 @@ import os
 import cv2
 import numpy as np
 
-from media.hw_capture import HwCapture
+from media.hw_capture import HwCapture, stop_gracefully
 
 
 def main():
@@ -42,7 +42,9 @@ def main():
             print(f"frame {i}: hw {px.shape} vs cpu, mean difference {diff:.1f} levels "
                   f"-> {'same picture' if diff < 12 else 'DIFFERENT picture'}", flush=True)
         i += 1
-    hw.release()
+    # never forced: 13/11 a forced stop on 246 left a ghost decoder session (CMA 16 MB, every camera failed)
+    if not stop_gracefully(hw._proc, timeout_s=30, force=False):
+        print("!! the decoder did not stop in 30 s: left running, it ends at the end of the file")
 
 
 if __name__ == "__main__":
