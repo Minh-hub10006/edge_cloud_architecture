@@ -21,7 +21,7 @@ bash scripts/triton_config_v4.sh trt              # Triton: cấu hình làn nha
 RTDETR_SPLIT_HEAD_ID=rtl2-w8a8pc,rtl2-onnx-fp32 bash scripts/run_cloud_v4.sh start 4   # 4 worker làn nhanh
 bash scripts/run_slow_v4.sh start                 # worker làn sau (UC3, UC4)
 bash scripts/run_plate_v4.sh start 4              # OCR biển số (EasyOCR, PLATE_OCR_PYTHON)
-bash scripts/run_results_v4.sh start              # ghi DB + trang kiểm tra http://192.168.180.249:18200
+bash scripts/run_results_v4.sh start              # ghi DB
 ```
 Dừng: `run_cloud_v4.sh stop`, `run_slow_v4.sh stop`, `run_plate_v4.sh stop`, `run_results_v4.sh stop` (Kafka, Triton, DB để chạy).
 

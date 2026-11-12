@@ -30,11 +30,11 @@ BUS (mỗi việc 1 hàng đợi riêng, đầy thì bỏ tin cũ) ─► luật
 Phản hồi giãn nhịp: worker làn sau đo độ trễ tin → `cloud.slow-feedback.v1` → Edge nhân khoảng cách gửi (ảnh đông
 người, clip, biển số).
 
-## 3. Video cho web
+## 3. Video cho web (chưa có web)
 
-Luồng chính của camera được chép nguyên (không mã hoá lại) lên MediaMTX của chính Edge; trình duyệt xem qua WebRTC (WHEP).
-Box lấy từ DB và ghép đúng khung nhờ số khung in trong dải nhận dạng của video thử (`web/live_sync.js`).
-Camera thật không có dải này: web sản phẩm cần cách ghép khác.
+Luồng chính của camera được chép nguyên (không mã hoá lại) lên MediaMTX của chính Edge (RTSP / WebRTC). Mỗi kết quả
+trong DB mang `media_pts_ns` = số khung của luồng chính / fps (dải nhận dạng in trong video thử) — web sản phẩm dùng nó
+để vẽ box đúng khung. Camera thật không có dải này: web sản phẩm cần cách ghép khác (theo thời điểm chụp).
 
 ## 4. Phản hồi điều khiển
 

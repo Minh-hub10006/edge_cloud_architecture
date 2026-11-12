@@ -4,7 +4,7 @@
 
 | Máy | Vai trò | Phần cứng / hệ điều hành | Ghi chú |
 |---|---|---|---|
-| **249** | Cloud | RTX 4090, Ubuntu; Docker: Kafka (`v4-kafka`, 29092), Triton (`v4-triton`, 18000/18001/18002), TimescaleDB (`v4-tsdb`, 25432) | worker làn nhanh, làn sau, OCR, ghi DB, trang kiểm tra 18200 |
+| **249** | Cloud | RTX 4090, Ubuntu; Docker: Kafka (`v4-kafka`, 29092), Triton (`v4-triton`, 18000/18001/18002), TimescaleDB (`v4-tsdb`, 25432) | worker làn nhanh, làn sau, OCR, ghi DB |
 | **246** | Edge | Qualcomm RB3gen2 (QCS6490), Ubuntu 24 | NPU HTP, giải mã `v4l2h264dec`, CMA ~125 MB |
 | **252** | Edge | QCS6490 ODK, Ubuntu 20, không tản nhiệt | giải mã `qtic2vdec`, daemon NPU "v3" theo tên đồ thị, nóng nhanh (85–97 °C khi đủ tải) |
 | **247** | Edge | PC Windows, RTX 5070 Ti, Git Bash | model ONNX trên GPU, giải mã OpenCV (CPU) |
@@ -26,7 +26,7 @@ Cloud 249 ◄──────────────── Kafka ◄───
   ├─ worker làn sau (slow_worker): UC3 DM-Count, UC4 RTMO-s + ST-GCN++ → bảng + sự kiện
   ├─ worker OCR biển số (EasyOCR) → bảng plates
   ├─ Triton: model làn nhanh (ưu tiên 1) + làn sau (ưu tiên 4) dưới bộ giới hạn GPU
-  └─ results_writer: mọi topic kết quả → TimescaleDB; trang kiểm tra 18200
+  └─ results_writer: mọi topic kết quả → TimescaleDB
 ```
 
 ## 3. Làn nhanh: 5 cách chạy (mỗi camera chọn 1)

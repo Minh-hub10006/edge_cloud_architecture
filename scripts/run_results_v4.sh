@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# v4 results store on 249 (6/11): TimescaleDB container + results writer + small check page.
+# v4 results store on 249 (6/11): TimescaleDB container + results writer (the check page was removed 13/11).
 #   bash scripts/run_results_v4.sh db       # first time: creates the password file and the database, applies the schema
-#   bash scripts/run_results_v4.sh start    # writer + check page on :18200 (DB port 25432)
+#   bash scripts/run_results_v4.sh start    # results writer (DB port 25432)
 #   bash scripts/run_results_v4.sh stop     # stops writer + page; the database keeps running
 # Python: env qnn + ~/v4_dbdeps (psycopg only, kept out of qnn on purpose). The password stays in ~/.v4_db.env (mode 600).
 set -euo pipefail
@@ -44,10 +44,8 @@ case "${1:?db|start|stop}" in
     export DB_DSN="postgresql://postgres:${POSTGRES_PASSWORD}@localhost:25432/v4" KAFKA_BOOTSTRAP_SERVERS=localhost:29092 \
       PYTHONPATH="$here:$HOME/v4_dbdeps" OMP_NUM_THREADS=1 DB_FLUSH_S=0.2 NODE_HOSTS="${NODE_HOSTS:-$hosts_default}"
     nohup bash -c 'exec -a v4-results-writer "$0" -B -m cloud_core.results_writer' "$py" > "$out/writer.log" 2>&1 &
-    nohup bash -c 'exec -a v4-results-check "$0" -B -m web.check_app' "$py" > "$out/check.log" 2>&1 &
     sleep 6
     tail -2 "$out/writer.log" | cut -c1-160
-    tail -2 "$out/check.log" | cut -c1-160
     pgrep -af "v4-results-" | cut -c1-70
     echo "logs: $out"
     ;;

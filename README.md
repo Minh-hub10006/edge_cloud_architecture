@@ -19,7 +19,7 @@ biển số, đếm và ùn tắc, đám đông, đánh nhau / ngã xe / lảng 
 | `contracts/` | kiểu dữ liệu chung, Kafka (`kafka_transport.py`), tensor chia đôi (`cut_tensor.py`), proto |
 | `inference/` | model: Triton client (`triton_detr.py`), NPU (`*_snpe.py`), đám đông, khung xương, hành động |
 | `media/` | giải mã phần cứng (`hw_capture.py`), nguồn khung, phát luồng chính lên MediaMTX |
-| `web/` | trang kiểm tra kết quả (`check_app.py`, cổng 18200), Cloud app |
+| `web/` | Cloud app của worker làn nhanh (`cloud_app.py`) |
 | `drl/`, `benchmark/` | khung DRL và công cụ đo (dùng bởi agent / script) |
 | `legacy/adapters/` | adapter NPU/SNPE (daemon, YOLO trên NPU) mà v4 dùng lại |
 | `native/` | mã nguồn daemon SNPE |
