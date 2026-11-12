@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 import shutil
-from time import time_ns
+from time import monotonic_ns, time_ns
 
 from contracts import MediaFrameRef
 
@@ -35,6 +35,7 @@ class CopyPublisher:
         self.main_video, self.start_s, self.ffmpeg_bin = main_video, start_s, ffmpeg_bin
         self.on_frame_submitted = on_frame_submitted
         self.frames_submitted = self.padding_frames_submitted = 0
+        self.started_mono_ns = None   # when FFmpeg began playing the file: the analytics source paces on this clock
         self._process = self._stderr_task = None
         self._stderr_tail = deque(maxlen=20)
 
@@ -49,6 +50,7 @@ class CopyPublisher:
             *build_copy_command(self.main_video, self.output, start_s=self.start_s, ffmpeg_bin=self.ffmpeg_bin,
                                 loop=self.loop_frames > 0),
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        self.started_mono_ns = monotonic_ns()
         self._stderr_task = asyncio.create_task(self._read_stderr(self._process.stderr))
 
     async def _read_stderr(self, stderr) -> None:

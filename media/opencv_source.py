@@ -44,6 +44,9 @@ class OpenCVFrameSource:
         self.loop = loop
         self.loops_completed = 0
         self.frames_skipped = 0   # realtime file: frames dropped to stay on the clock, like a live camera
+        # 12/11: frame 0's time = when the main stream started (set by the agent from its CopyPublisher), not when this
+        # source finished opening its decoder: on 252 that took seconds and the video stayed ~3.5 s ahead of the boxes.
+        self.clock_origin_mono_ns = None
         # v4 (7/11): a GStreamer hardware decoder (media/hw_capture.py), pixel-identical to OpenCV; None = OpenCV on the CPU.
         self.decoder = decoder
         # 8/11: with a decoder, also resize on the GPU to hw_size x hw_size (stretched); 0 = full frames.
@@ -78,7 +81,7 @@ class OpenCVFrameSource:
             source_fps = await asyncio.to_thread(cap.get, cv2.CAP_PROP_FPS)
             source_fps = source_fps if math.isfinite(source_fps) and 0 < source_fps <= 240 else 15.0
             is_file = isinstance(self.source, str) and Path(self.source).is_file()
-            started_mono_ns = monotonic_ns()
+            started_mono_ns = self.clock_origin_mono_ns or monotonic_ns()
             last_pts = -1
             frame_id = 0
 

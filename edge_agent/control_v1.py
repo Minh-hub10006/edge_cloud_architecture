@@ -519,6 +519,8 @@ async def run_pipeline(source, publisher, client, detectors, controller, monitor
 
     try:
         async with publisher:
+            if getattr(publisher, "started_mono_ns", None) and hasattr(source, "clock_origin_mono_ns"):
+                source.clock_origin_mono_ns = publisher.started_mono_ns   # analytics on the main stream's clock
             ticker_task = asyncio.create_task(ticker())
             feedback_task = asyncio.create_task(feedback())
             resource_task = asyncio.create_task(resources())

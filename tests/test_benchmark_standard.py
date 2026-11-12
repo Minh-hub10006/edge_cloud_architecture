@@ -110,6 +110,31 @@ class LateConsumerSourceTests(unittest.TestCase):
         self.assertEqual(len(ids) + source.frames_skipped, ids[-1] + 1)   # every number is the file's own
 
 
+class ClockOriginSourceTests(unittest.TestCase):
+    def test_frame_numbers_follow_the_main_streams_clock_not_the_sources_opening(self):
+        # 12/11 on 252: the main stream started seconds before the source had opened its decoder; the video stayed
+        # ~3.5 s (53 frames) ahead of the boxes and the page matched none
+        cv2 = __import__("cv2")
+        import numpy as np
+        from time import monotonic_ns
+        from media.opencv_source import OpenCVFrameSource
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "clip.avi")
+            writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"MJPG"), 50, (64, 48))
+            for i in range(60):
+                writer.write(np.full((48, 64, 3), i * 4, np.uint8))
+            writer.release()
+
+            async def first_id():
+                source = OpenCVFrameSource(path, node_id="n", camera_id="c", stream_id="s", max_frames=60)
+                source.clock_origin_mono_ns = monotonic_ns() - 500_000_000   # the video started 0.5 s ago
+                async for frame in source:
+                    return frame.identity.source_frame_id
+            first = asyncio.run(first_id())
+        self.assertGreaterEqual(first, 20)   # ~25 frames at 50 fps: in step with the video from the first frame
+        self.assertLess(first, 40)
+
+
 class StartFrameSourceTests(unittest.TestCase):
     def test_start_frame_skips_into_the_clip_and_loops_back_to_its_start(self):
         cv2 = __import__("cv2")
