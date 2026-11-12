@@ -246,8 +246,8 @@ class HwCaptureTests(unittest.TestCase):
         img = np.full((2, 2, 3), 7, np.uint8)
         cap = HwCapture.__new__(HwCapture)
         cap.size, cap.frame_bytes, cap.hires_every, cap.index, cap.stalls = 2, 12, 0, 5, 0
-        cap.failures = cap._failed_in_row = 0
-        cap.frame_count = 100
+        cap.failures = cap.restarts = 0
+        cap.dead, cap.frame_count = False, 100
         cap._err, cap._buf, cap.last_hires = deque(["qtic2vdec: no buffer"], maxlen=20), bytearray(12), None
         cap._proc = fake_pipeline([])                                     # stalled: nothing ever comes
         restarted_at = []
@@ -256,11 +256,13 @@ class HwCaptureTests(unittest.TestCase):
             restarted_at.append(value)
             cap._proc, cap._buf = fake_pipeline([img.tobytes()]), bytearray(12)
             return True
-        with mock.patch.object(hw_capture, "STALL_S", 0.05), mock.patch.object(cap, "set", side_effect=restart):
+        with mock.patch.object(hw_capture, "STALL_S", 0.05), mock.patch.object(cap, "set", side_effect=restart), \
+                mock.patch.object(hw_capture, "stop_gracefully", return_value=True) as stop, mock.patch("time.sleep"):
             ok, frame = cap.read()
         self.assertTrue(ok)
         self.assertTrue((frame == img).all())
-        self.assertEqual((restarted_at, cap.stalls, cap.index), ([5], 1, 6))
+        self.assertEqual((restarted_at, cap.stalls, cap.index, cap.restarts), ([5], 1, 6, 1))
+        self.assertEqual(stop.call_args.kwargs, {"timeout_s": 15, "force": False})   # never killed (ghost sessions)
 
     def test_a_hung_probe_is_tried_once_more_and_a_failed_one_is_not(self):
         # 12/11 on 246: one of 4 agents' probe hung 60 s while the others opened their decoders; that camera never ran
@@ -302,7 +304,7 @@ class HwCaptureTests(unittest.TestCase):
                 self.pos += len(piece)
                 return piece
         cap = HwCapture.__new__(HwCapture)
-        cap.frame_bytes, cap.index = 12, 0
+        cap.frame_bytes, cap.index, cap.dead = 12, 0, False
 
         def start():
             cap._proc, cap.index = SimpleNamespace(stdout=Pipe()), 0
@@ -318,17 +320,40 @@ class HwCaptureTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest import mock
         from media.hw_capture import HwCapture
+        from media import hw_capture
         cap = HwCapture.__new__(HwCapture)
-        cap.frame_count, cap.index, cap.failures, cap._failed_in_row = 2100, 329, 0, 0
+        cap.frame_count, cap.index, cap.failures, cap.restarts, cap.dead = 2100, 329, 0, 0, False
         cap._err, cap._proc = deque(["poll error"], maxlen=20), SimpleNamespace(poll=lambda: 1)
-        with mock.patch("time.sleep") as sleep, mock.patch.object(cap, "set", return_value=True) as seek:
+        with mock.patch("time.sleep") as sleep, mock.patch.object(cap, "set", return_value=True) as seek, \
+                mock.patch.object(hw_capture, "stop_gracefully", return_value=True):
             self.assertTrue(cap._restart_after_failure())
             seek.assert_called_once_with(1, 329)
-            sleep.assert_called_once_with(1)
+            sleep.assert_called_once_with(2)                  # the driver closes the old session first
             cap.index = 2099                                  # the real end of the file: the source rewinds itself
             self.assertFalse(cap._restart_after_failure())
-            cap.index, cap._failed_in_row = 500, cap.MAX_FAILURES_IN_ROW
-            self.assertFalse(cap._restart_after_failure())    # it keeps failing: give up, do not spin
+            cap.index = 500
+            self.assertTrue(cap._restart_after_failure())
+            self.assertTrue(cap._restart_after_failure())
+            self.assertFalse(cap._restart_after_failure())    # 4th restart: over budget, the camera stops
+        self.assertTrue(cap.dead)
+        self.assertFalse(cap.set(1, 0))                       # and the loop rewind opens nothing either
+        self.assertEqual(cap.read(), (False, None))
+
+    def test_a_decoder_that_will_not_stop_is_never_replaced_by_a_new_session(self):
+        # 12/11 on 246: msm_vidc "max limit 16 already running 16 sessions" - killed / unstopped decoders leaked them
+        from collections import deque
+        from types import SimpleNamespace
+        from unittest import mock
+        from media import hw_capture
+        from media.hw_capture import HwCapture
+        cap = HwCapture.__new__(HwCapture)
+        cap.frame_count, cap.index, cap.failures, cap.restarts, cap.dead = 2100, 50, 0, 0, False
+        cap._err, cap._proc = deque([], maxlen=20), SimpleNamespace(poll=lambda: None)
+        with mock.patch.object(hw_capture, "stop_gracefully", return_value=False), \
+                mock.patch.object(cap, "set") as seek, mock.patch("time.sleep"):
+            self.assertFalse(cap._restart_after_failure())
+        seek.assert_not_called()
+        self.assertTrue(cap.dead)
 
     def test_a_stopped_pipelines_hires_reader_never_marks_the_next_one_ended(self):
         # 12/11: the old reader wrote its end marker into the new pipeline's dict (restart, loop rewind)

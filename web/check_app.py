@@ -22,7 +22,7 @@ RECENT_SQL = """
 SELECT media_pts_ns / 1000000 AS pts_ms, track_id, class_name, confidence, x1, y1, x2, y2,
        (extract(epoch FROM capture_time) * 1000)::bigint AS cap_ms
 FROM detections
-WHERE node_id = %s AND camera_id = %s AND stream_id = %s AND stream_epoch = %s AND capture_time > now() - INTERVAL '5 seconds'
+WHERE node_id = %s AND camera_id = %s AND stream_id = %s AND stream_epoch = %s AND capture_time > now() - INTERVAL '30 seconds'
       AND capture_time > to_timestamp(%s / 1000.0)
 ORDER BY capture_time"""
 # 12/11: the cursor was "media_pts_ns > the newest the page has". The test video loops (-stream_loop since 11/11) and
@@ -76,13 +76,15 @@ async function refresh(){let list;try{list=await (await fetch('api/streams')).js
 async function pull(v){if(v.busy)return;v.busy=true;const s=v.s,q=new URLSearchParams({node:s.node_id,camera:s.camera_id,stream:s.stream_id,epoch:s.stream_epoch,after_cap_ms:v.cursor||-1});
  try{const r=await (await fetch('api/recent?'+q)).json();for(const f of r.frames){v.boxes.delete(f.pts_ms);v.boxes.set(f.pts_ms,f.boxes);v.newest=f.pts_ms;
  for(const b of f.boxes)if(b.cap_ms>(v.cursor||0))v.cursor=b.cap_ms}
- for(const k of v.boxes.keys()){if(v.boxes.size>150)v.boxes.delete(k);else break}}catch(e){}finally{v.busy=false}}
+ for(const k of v.boxes.keys()){if(v.boxes.size>600)v.boxes.delete(k);else break}}catch(e){}finally{v.busy=false}}
 const band=document.createElement('canvas');band.width=128;band.height=64;const bctx=band.getContext('2d',{willReadFrequently:true});
 function draw(v,el){const W=el.videoWidth,H=el.videoHeight;if(W<128||H<=64)return;
  bctx.drawImage(el,0,H-64,128,64,0,0,128,64);const id=LiveSync.decodeIdentity(bctx.getImageData(0,0,128,64).data,TAG);
  if(!id){v.bad++;return}
- // the test video looped (frame number back to 0): boxes of the old lap must not be drawn on the new one
- const ms0=Math.floor(id.pts/1e6);if(v.bandMs!==undefined&&ms0<v.bandMs-1000){v.boxes.clear();v.last=null}
+ // 12/11: with 4+ cameras on a slow link the video falls seconds behind the boxes; boxes are kept ~40 s (600 frames)
+ // and fetched for the last 30 s, so a late video still finds them. A loop of the test video (frame number back to 0)
+ // only resets the held box: the next lap's boxes replace the old ones frame by frame.
+ const ms0=Math.floor(id.pts/1e6);if(v.bandMs!==undefined&&ms0<v.bandMs-1000)v.last=null;
  v.bandMs=ms0;
  const s=Math.min(1,720/W),w=Math.round(W*s),h=Math.round((H-64)*s);
  const im=v.pool.pop()||Object.assign(document.createElement('canvas'),{width:w,height:h});

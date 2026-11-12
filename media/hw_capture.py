@@ -48,11 +48,13 @@ def _interrupt_when_parent_dies() -> None:  # runs in the child before exec (Lin
     ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGINT)  # PR_SET_PDEATHSIG
 
 
-def stop_gracefully(proc, timeout_s: float = 5.0) -> None:
+def stop_gracefully(proc, timeout_s: float = 5.0, force: bool = True) -> bool:
     """SIGINT (EOS, the decoder flushes and closes), keep reading the pipe so it is never blocked, then wait; force only
-    if it does not finish."""
+    if it does not finish and force is set. -> True when it ended by itself (its decoder session was closed).
+    12/11 on 246: msm_vidc "max limit 16 already running 16 sessions" with no decoder running - killed decoders leave
+    ghost sessions until a reboot; restarts therefore never force (force=False) and give up instead."""
     if proc is None or proc.poll() is not None:
-        return
+        return True
     proc.send_signal(signal.SIGINT)
     end = time.monotonic() + timeout_s
     if proc.stdout is not None:
@@ -65,13 +67,19 @@ def stop_gracefully(proc, timeout_s: float = 5.0) -> None:
                 time.sleep(.02)
     try:
         proc.wait(timeout=max(.1, end - time.monotonic()))
+        return True
     except subprocess.TimeoutExpired:
+        if not force:
+            return False
+        print("[HwCapture] decoder did not stop on SIGINT: terminating it (may leave a decoder session until reboot)",
+              flush=True)
         proc.terminate()
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        return False
 
 
 def find_stride(log: str, width: int, height: int) -> int:
@@ -166,7 +174,8 @@ class HwCapture:
             self.stride = find_stride(log, self.width, self.height)
             self.frame_bytes = self.stride * self.height * 3 // 2
         self.index, self._proc, self._err = 0, None, deque(maxlen=20)
-        self.stalls = self.failures = self._failed_in_row = 0
+        self.stalls = self.failures = self.restarts = 0
+        self.dead = False   # gave up: no new decoder session will be opened (read and set return False)
         self._start()
 
     def _probe(self, chain) -> str:
@@ -284,44 +293,58 @@ class HwCapture:
         ready, _, _ = select.select([self._proc.stdout], [], [], timeout_s)
         return bool(ready)
 
-    def _restart_after_stall(self) -> None:
+    MAX_RESTARTS = 3   # per capture (camera run): stalls and failures together
+
+    def _restart_at_current_frame(self, why: str) -> bool:
+        """Stop the decoder gracefully (never killed: a killed one leaks a session, 16 per Edge), wait for the driver,
+        open a new one at the frame we were on. -> False (and dead) when over budget or the old one would not stop."""
+        tail = " | ".join(list(self._err)[-3:])
+        if self.restarts >= self.MAX_RESTARTS:
+            print(f"[HwCapture] {why} at frame {self.index}: {tail}; already restarted {self.restarts} times, giving up "
+                  f"(camera stops)", flush=True)
+            self.dead = True
+            return False
+        self.restarts += 1
+        print(f"[HwCapture] {why} at frame {self.index} (restart {self.restarts}/{self.MAX_RESTARTS}): {tail}",
+              flush=True)
+        proc, self._proc = self._proc, None
+        if not stop_gracefully(proc, timeout_s=15, force=False):
+            print("[HwCapture] the old decoder did not stop in 15 s: not opening another session, camera stops "
+                  "(reboot the Edge if this repeats)", flush=True)
+            self._proc, self.dead = proc, True
+            return False
+        time.sleep(2)   # let msm_vidc close the session before a new one opens
+        if not self.set(CAP_PROP_POS_FRAMES, self.index):
+            print(f"[HwCapture] restart could not reach frame {self.index}: camera stops", flush=True)
+            self.dead = True
+            return False
+        return True
+
+    def _restart_after_stall(self) -> bool:
         self.stalls += 1
         alive = self._proc is not None and self._proc.poll() is None
-        tail = " | ".join(list(self._err)[-3:])
-        print(f"[HwCapture] no frame for {STALL_S:.0f} s at frame {self.index} (stall {self.stalls}, gst "
-              f"{'alive' if alive else 'exited'}): {tail}; restarting the decoder there", flush=True)
-        self.set(CAP_PROP_POS_FRAMES, self.index)
-
-    MAX_FAILURES_IN_ROW = 5
+        return self._restart_at_current_frame(f"no frame for {STALL_S:.0f} s (gst {'alive' if alive else 'exited'})")
 
     def _restart_after_failure(self) -> bool:
         """The pipeline ended. Before the file's last frame that is a decoder failure (12/11: 246 and 252 decoders exited
-        at 22 s / 91 s, the source took it for the end of the file, its one rewind failed too, the camera stopped):
-        restart at the frame it was on, waiting 1, 2, 4... s, at most MAX_FAILURES_IN_ROW times in a row.
-        -> True when restarted, False at the real end of the file (or after too many failures)."""
+        at 22 s / 91 s and the camera stopped): restart there, within the same budget as stalls.
+        -> True when restarted, False at the real end of the file or when giving up."""
         if not self.frame_count or self.index >= self.frame_count - 5:   # the decoder may give a few frames fewer
             return False
-        if self._failed_in_row >= self.MAX_FAILURES_IN_ROW:
-            print(f"[HwCapture] decoder failed {self._failed_in_row} times in a row at frame {self.index}: giving up",
-                  flush=True)
-            return False
-        self._failed_in_row += 1
         self.failures += 1
         code = self._proc.poll() if self._proc is not None else None
-        tail = " | ".join(list(self._err)[-3:])
-        wait = 2 ** (self._failed_in_row - 1)
-        print(f"[HwCapture] decoder ended at frame {self.index} of {self.frame_count} (exit {code}, failure "
-              f"{self.failures}): {tail}; restarting there in {wait} s", flush=True)
-        time.sleep(wait)
-        self.set(CAP_PROP_POS_FRAMES, self.index)   # if this fails too, the next read comes back here (counted)
-        return True
+        return self._restart_at_current_frame(f"decoder ended (exit {code}) before the end of the file "
+                                              f"({self.frame_count} frames)")
 
     def read(self):
+        if self.dead:
+            return False, None
         buf = self._buf
         view, got = memoryview(buf), 0
         while got < self.frame_bytes:
             if not self._readable(STALL_S):
-                self._restart_after_stall()
+                if not self._restart_after_stall():
+                    return False, None
                 buf = self._buf
                 view, got = memoryview(buf), 0
                 continue
@@ -333,7 +356,6 @@ class HwCapture:
                 view, got = memoryview(buf), 0
                 continue
             got += n
-        self._failed_in_row = 0
         self.last_hires = self._hires_for(self.index)
         self.index += 1
         return True, (small_bgr(buf, self.size) if self.size else nv12_to_bgr(buf, self.width, self.height, self.stride))
@@ -348,7 +370,7 @@ class HwCapture:
         return 0.0
 
     def set(self, prop: int, value) -> bool:
-        if prop != CAP_PROP_POS_FRAMES:
+        if prop != CAP_PROP_POS_FRAMES or self.dead:   # gave up: the loop rewind must not open a new session either
             return False
         self.release()  # rewind = restart; a start frame is reached by decoding and dropping (cheap on the video block)
         self._start()

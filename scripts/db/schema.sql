@@ -36,6 +36,10 @@ SELECT create_hypertable('detections', 'capture_time', chunk_time_interval => IN
 CREATE INDEX IF NOT EXISTS frames_stream_time ON frames (camera_id, stream_id, capture_time DESC);
 CREATE INDEX IF NOT EXISTS detections_stream_frame ON detections (camera_id, stream_id, frame_id, capture_time DESC);
 CREATE INDEX IF NOT EXISTS detections_track ON detections (camera_id, track_id, capture_time DESC);
+-- 12/11: the check page asks one stream's boxes of the last seconds, 5 times/s per tile; the index above starts with
+-- frame_id, so each ask scanned the camera's whole hour chunk and 4+ tiles overloaded the DB (boxes came late, then
+-- vanished). This one matches the query.
+CREATE INDEX IF NOT EXISTS detections_stream_time ON detections (node_id, camera_id, stream_id, stream_epoch, capture_time DESC);
 SELECT add_retention_policy('frames', INTERVAL '7 days', if_not_exists => TRUE);
 SELECT add_retention_policy('detections', INTERVAL '7 days', if_not_exists => TRUE);
 
