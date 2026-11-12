@@ -19,10 +19,14 @@ SELECT node_id, camera_id, stream_id, stream_epoch, count(*) AS frames, avg(box_
 FROM frames WHERE capture_time > now() - INTERVAL '10 seconds'
 GROUP BY node_id, camera_id, stream_id, stream_epoch ORDER BY node_id, camera_id"""
 RECENT_SQL = """
-SELECT media_pts_ns / 1000000 AS pts_ms, track_id, class_name, confidence, x1, y1, x2, y2
+SELECT media_pts_ns / 1000000 AS pts_ms, track_id, class_name, confidence, x1, y1, x2, y2,
+       (extract(epoch FROM capture_time) * 1000)::bigint AS cap_ms
 FROM detections
-WHERE node_id = %s AND camera_id = %s AND stream_id = %s AND stream_epoch = %s AND capture_time > now() - INTERVAL '5 seconds' AND media_pts_ns > %s
+WHERE node_id = %s AND camera_id = %s AND stream_id = %s AND stream_epoch = %s AND capture_time > now() - INTERVAL '5 seconds'
+      AND capture_time > to_timestamp(%s / 1000.0)
 ORDER BY capture_time"""
+# 12/11: the cursor was "media_pts_ns > the newest the page has". The test video loops (-stream_loop since 11/11) and
+# its frame number returns to 0: nothing was "newer" any more and the boxes vanished for good after the first loop.
 
 PAGE = """<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Kiểm tra kết quả v4</title>
 <script src="live_sync.js"></script>
@@ -69,13 +73,17 @@ async function refresh(){let list;try{list=await (await fetch('api/streams')).js
  for(const s of list){const k=key(s);if(!tiles.has(k))tiles.set(k,tile(s));const v=tiles.get(k);v.s=s;
   v.n.textContent=`${(s.frames/10).toFixed(1)} khung/s · ${s.boxes.toFixed(1)} box/khung · trễ ${s.latency_ms.toFixed(0)} ms · ${s.mode} · mới nhất ${s.age_s.toFixed(1)} s trước${v.err||''} · khung khớp ${v.hit}, chưa có box ${v.miss}, không đọc được mã ${v.bad}, box đi trước video ${v.lead??'?'} khung`}
  none.hidden=list.length>0}
-async function pull(v){if(v.busy)return;v.busy=true;const s=v.s,q=new URLSearchParams({node:s.node_id,camera:s.camera_id,stream:s.stream_id,epoch:s.stream_epoch,after_ms:v.newest||-1});
- try{const r=await (await fetch('api/recent?'+q)).json();for(const f of r.frames){v.boxes.set(f.pts_ms,f.boxes);v.newest=Math.max(v.newest,f.pts_ms)}
- for(const k of v.boxes.keys()){if(k<v.newest-6000)v.boxes.delete(k);else break}}catch(e){}finally{v.busy=false}}
+async function pull(v){if(v.busy)return;v.busy=true;const s=v.s,q=new URLSearchParams({node:s.node_id,camera:s.camera_id,stream:s.stream_id,epoch:s.stream_epoch,after_cap_ms:v.cursor||-1});
+ try{const r=await (await fetch('api/recent?'+q)).json();for(const f of r.frames){v.boxes.delete(f.pts_ms);v.boxes.set(f.pts_ms,f.boxes);v.newest=f.pts_ms;
+ for(const b of f.boxes)if(b.cap_ms>(v.cursor||0))v.cursor=b.cap_ms}
+ for(const k of v.boxes.keys()){if(v.boxes.size>150)v.boxes.delete(k);else break}}catch(e){}finally{v.busy=false}}
 const band=document.createElement('canvas');band.width=128;band.height=64;const bctx=band.getContext('2d',{willReadFrequently:true});
 function draw(v,el){const W=el.videoWidth,H=el.videoHeight;if(W<128||H<=64)return;
  bctx.drawImage(el,0,H-64,128,64,0,0,128,64);const id=LiveSync.decodeIdentity(bctx.getImageData(0,0,128,64).data,TAG);
  if(!id){v.bad++;return}
+ // the test video looped (frame number back to 0): boxes of the old lap must not be drawn on the new one
+ const ms0=Math.floor(id.pts/1e6);if(v.bandMs!==undefined&&ms0<v.bandMs-1000){v.boxes.clear();v.last=null}
+ v.bandMs=ms0;
  const s=Math.min(1,720/W),w=Math.round(W*s),h=Math.round((H-64)*s);
  const im=v.pool.pop()||Object.assign(document.createElement('canvas'),{width:w,height:h});
  im.getContext('2d').drawImage(el,0,0,W,H-64,0,0,w,h);
@@ -139,7 +147,7 @@ def create_app(connect=None, node_hosts=None):
         p = request.query_params
         try:
             stream = (p["node"], p["camera"], p["stream"], int(p["epoch"]))
-            after_ns = int(p.get("after_ms", "-1")) * 1_000_000
+            after_ns = int(p.get("after_cap_ms", "-1"))   # capture time (ms since 1970) of the newest box the page has
         except (KeyError, ValueError):
             return JSONResponse({"error": "node, camera, stream and integer epoch are required"}, status_code=400)
 

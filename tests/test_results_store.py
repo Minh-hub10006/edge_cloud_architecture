@@ -110,9 +110,10 @@ class CheckPageTests(unittest.TestCase):
         r = c.get("/api/recent", params={"node": "edge-246", "camera": "cam-1", "stream": "s1", "epoch": 5}).json()
         self.assertEqual([f["pts_ms"] for f in r["frames"]], [900, 960])       # boxes grouped per frame, oldest first
         self.assertEqual(r["frames"][0]["boxes"][1], {"track_id": 8, "class_name": "bus"})
-        self.assertEqual(self.seen[-1][1], ("edge-246", "cam-1", "s1", 5, -1000000))   # bound parameters, never pasted SQL
-        c.get("/api/recent", params={"node": "edge-246", "camera": "cam-1", "stream": "s1", "epoch": 5, "after_ms": 960})
-        self.assertEqual(self.seen[-1][1][-1], 960000000)                    # only frames newer than the page already has
+        self.assertEqual(self.seen[-1][1], ("edge-246", "cam-1", "s1", 5, -1))   # bound parameters, never pasted SQL
+        c.get("/api/recent", params={"node": "edge-246", "camera": "cam-1", "stream": "s1", "epoch": 5,
+                                     "after_cap_ms": 1794400000960})
+        self.assertEqual(self.seen[-1][1][-1], 1794400000960)   # only boxes captured after the newest the page has
 
     def test_bad_query_is_refused_before_touching_the_database(self):
         c = self.client()
@@ -245,6 +246,8 @@ class HwCaptureTests(unittest.TestCase):
         img = np.full((2, 2, 3), 7, np.uint8)
         cap = HwCapture.__new__(HwCapture)
         cap.size, cap.frame_bytes, cap.hires_every, cap.index, cap.stalls = 2, 12, 0, 5, 0
+        cap.failures = cap._failed_in_row = 0
+        cap.frame_count = 100
         cap._err, cap._buf, cap.last_hires = deque(["qtic2vdec: no buffer"], maxlen=20), bytearray(12), None
         cap._proc = fake_pipeline([])                                     # stalled: nothing ever comes
         restarted_at = []
@@ -272,10 +275,60 @@ class HwCaptureTests(unittest.TestCase):
             with mock.patch.object(cap, "_probe_once", side_effect=[hung, hung]):
                 with self.assertRaisesRegex(RuntimeError, "after one retry"):
                     cap._probe(["chain"])
-            with mock.patch.object(cap, "_probe_once", side_effect=RuntimeError("probe failed (exit 1)")) as once:
+            busy = RuntimeError("probe failed (exit 1): Device or resource busy. Check the device (an ENOMEM ...)")
+            with mock.patch.object(cap, "_probe_once", side_effect=[busy, "log"]) as once:   # 12/11 on 246 and 252
+                self.assertEqual(cap._probe(["chain"]), "log")
+            self.assertEqual(once.call_count, 2)
+            oom = RuntimeError("probe failed (exit 1): vb2_streamon failed, -12. Check the device (an ENOMEM ...)")
+            with mock.patch.object(cap, "_probe_once", side_effect=oom) as once:
                 with self.assertRaises(RuntimeError):
                     cap._probe(["chain"])
-            self.assertEqual(once.call_count, 1)
+            self.assertEqual(once.call_count, 1)   # out of memory: only a reboot helps
+
+    def test_restart_at_a_frame_skips_whole_frames_even_when_the_pipe_gives_small_pieces(self):
+        # 12/11: one read(frame_bytes) on the unbuffered pipe returns <= 64 KB, so a restart at frame > 0 stopped at once,
+        # index back at 0, stream cut mid-frame -> shifted garbage pictures, no boxes (246 and 252)
+        from types import SimpleNamespace
+        from unittest import mock
+        from media.hw_capture import CAP_PROP_POS_FRAMES, HwCapture
+        frames = b"".join(bytes([k]) * 12 for k in range(4))
+
+        class Pipe:   # like a raw pipe: never more than 5 bytes per read
+            def __init__(self):
+                self.pos = 0
+
+            def read(self, n):
+                piece = frames[self.pos:self.pos + min(n, 5)]
+                self.pos += len(piece)
+                return piece
+        cap = HwCapture.__new__(HwCapture)
+        cap.frame_bytes, cap.index = 12, 0
+
+        def start():
+            cap._proc, cap.index = SimpleNamespace(stdout=Pipe()), 0
+        with mock.patch.object(cap, "release"), mock.patch.object(cap, "_start", side_effect=start), \
+                mock.patch.object(cap, "_readable", return_value=True):
+            self.assertTrue(cap.set(CAP_PROP_POS_FRAMES, 3))
+            self.assertEqual((cap.index, cap._proc.stdout.pos), (3, 36))   # exactly at the start of frame 3
+            self.assertFalse(cap.set(CAP_PROP_POS_FRAMES, 9))              # the file has only 4 frames
+
+    def test_a_decoder_that_exits_before_the_end_of_the_file_restarts_where_it_was(self):
+        # 12/11: decoders exited at 22 s / 91 s; the source took it for the end of the file and the camera stopped
+        from collections import deque
+        from types import SimpleNamespace
+        from unittest import mock
+        from media.hw_capture import HwCapture
+        cap = HwCapture.__new__(HwCapture)
+        cap.frame_count, cap.index, cap.failures, cap._failed_in_row = 2100, 329, 0, 0
+        cap._err, cap._proc = deque(["poll error"], maxlen=20), SimpleNamespace(poll=lambda: 1)
+        with mock.patch("time.sleep") as sleep, mock.patch.object(cap, "set", return_value=True) as seek:
+            self.assertTrue(cap._restart_after_failure())
+            seek.assert_called_once_with(1, 329)
+            sleep.assert_called_once_with(1)
+            cap.index = 2099                                  # the real end of the file: the source rewinds itself
+            self.assertFalse(cap._restart_after_failure())
+            cap.index, cap._failed_in_row = 500, cap.MAX_FAILURES_IN_ROW
+            self.assertFalse(cap._restart_after_failure())    # it keeps failing: give up, do not spin
 
     def test_a_stopped_pipelines_hires_reader_never_marks_the_next_one_ended(self):
         # 12/11: the old reader wrote its end marker into the new pipeline's dict (restart, loop rewind)

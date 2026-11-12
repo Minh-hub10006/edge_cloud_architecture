@@ -139,6 +139,7 @@ class HwCapture:
         probe = cv2.VideoCapture(source)  # only the stream's size and rate
         self.width, self.height = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = probe.get(cv2.CAP_PROP_FPS)
+        self.frame_count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)   # tells a decoder failure from the file's end
         probe.release()
         if not self.width or not self.height:
             raise RuntimeError(f"cannot read the size of {source}")
@@ -165,20 +166,26 @@ class HwCapture:
             self.stride = find_stride(log, self.width, self.height)
             self.frame_bytes = self.stride * self.height * 3 // 2
         self.index, self._proc, self._err = 0, None, deque(maxlen=20)
-        self.stalls = 0
+        self.stalls = self.failures = self._failed_in_row = 0
         self._start()
 
     def _probe(self, chain) -> str:
-        """One retry after a hang (12/11 on 246, 4 agents x 2 probes + live pipelines opening at once: one probe hung
-        60 s and its camera never started). A failure (exit code, e.g. ENOMEM) is not retried."""
+        """One retry after a hang or a failure (12/11 on 246/252, agents opening decoders at once: a probe hung 60 s, or
+        failed with "Device or resource busy" / "poll error", and its camera never started). Out of memory (ENOMEM, -12)
+        is not retried: only a reboot of the Edge frees it."""
         try:
             return self._probe_once(chain)
-        except TimeoutError as exc:
+        except (TimeoutError, RuntimeError) as exc:
+            log = str(exc).split(". Check the device")[0]   # the pipeline's own words, not the hint after them
+            if not isinstance(exc, TimeoutError) and re.search(r"ENOMEM|-12\b|Cannot allocate memory", log):
+                raise
             print(f"[HwCapture] {exc}; retrying once in 3 s", flush=True)
             time.sleep(3)
             try:
                 return self._probe_once(chain)
             except TimeoutError as again:
+                raise RuntimeError(f"{again} (after one retry)") from again
+            except RuntimeError as again:
                 raise RuntimeError(f"{again} (after one retry)") from again
 
     def _probe_once(self, chain) -> str:
@@ -206,8 +213,8 @@ class HwCapture:
             hint = ""
             if "link has no sink" in log or "no element" in log:
                 hint = f" -> GStreamer has no '{self.decoder}' element: the decoder device could not be opened"
-            raise RuntimeError(f"hardware decoder probe failed (exit {p.returncode}){hint}: {tail}. Not retried; "
-                               f"check the device (an ENOMEM on /dev/video32 needs a reboot of the Edge)")
+            raise RuntimeError(f"hardware decoder probe failed (exit {p.returncode}){hint}: {tail}. Check the device "
+                               f"(an ENOMEM on /dev/video32 needs a reboot of the Edge)")
         return out + err
 
     def _start(self) -> None:
@@ -285,6 +292,30 @@ class HwCapture:
               f"{'alive' if alive else 'exited'}): {tail}; restarting the decoder there", flush=True)
         self.set(CAP_PROP_POS_FRAMES, self.index)
 
+    MAX_FAILURES_IN_ROW = 5
+
+    def _restart_after_failure(self) -> bool:
+        """The pipeline ended. Before the file's last frame that is a decoder failure (12/11: 246 and 252 decoders exited
+        at 22 s / 91 s, the source took it for the end of the file, its one rewind failed too, the camera stopped):
+        restart at the frame it was on, waiting 1, 2, 4... s, at most MAX_FAILURES_IN_ROW times in a row.
+        -> True when restarted, False at the real end of the file (or after too many failures)."""
+        if not self.frame_count or self.index >= self.frame_count - 5:   # the decoder may give a few frames fewer
+            return False
+        if self._failed_in_row >= self.MAX_FAILURES_IN_ROW:
+            print(f"[HwCapture] decoder failed {self._failed_in_row} times in a row at frame {self.index}: giving up",
+                  flush=True)
+            return False
+        self._failed_in_row += 1
+        self.failures += 1
+        code = self._proc.poll() if self._proc is not None else None
+        tail = " | ".join(list(self._err)[-3:])
+        wait = 2 ** (self._failed_in_row - 1)
+        print(f"[HwCapture] decoder ended at frame {self.index} of {self.frame_count} (exit {code}, failure "
+              f"{self.failures}): {tail}; restarting there in {wait} s", flush=True)
+        time.sleep(wait)
+        self.set(CAP_PROP_POS_FRAMES, self.index)   # if this fails too, the next read comes back here (counted)
+        return True
+
     def read(self):
         buf = self._buf
         view, got = memoryview(buf), 0
@@ -296,8 +327,13 @@ class HwCapture:
                 continue
             n = self._proc.stdout.readinto(view[got:])
             if not n:
-                return False, None  # end of file, or the pipeline stopped (error_tail says why)
+                if not self._restart_after_failure():
+                    return False, None  # end of file, or the decoder keeps failing (error_tail says why)
+                buf = self._buf
+                view, got = memoryview(buf), 0
+                continue
             got += n
+        self._failed_in_row = 0
         self.last_hires = self._hires_for(self.index)
         self.index += 1
         return True, (small_bgr(buf, self.size) if self.size else nv12_to_bgr(buf, self.width, self.height, self.stride))
@@ -318,10 +354,23 @@ class HwCapture:
         self._start()
         target = int(value)
         while self.index < target:
-            buf = self._proc.stdout.read(self.frame_bytes)
-            if len(buf) < self.frame_bytes:
+            if not self._skip_frame():
                 return False
             self.index += 1
+        return True
+
+    def _skip_frame(self) -> bool:
+        """Drop exactly one frame. 12/11: this used one read(frame_bytes) on the unbuffered pipe, which returns at most
+        ~64 KB: every restart at a frame > 0 (new that day: decoder stall recovery) stopped at once with the index back
+        at 0 and the byte stream cut mid-frame - the camera went on with shifted garbage pictures and no boxes."""
+        left = self.frame_bytes
+        while left:
+            if not self._readable(STALL_S):
+                return False
+            chunk = self._proc.stdout.read(min(left, 1 << 20))
+            if not chunk:
+                return False
+            left -= len(chunk)
         return True
 
     def release(self) -> None:
