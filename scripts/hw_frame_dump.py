@@ -57,6 +57,15 @@ def main():
         diff = float(np.abs(px.astype(int) - cv2.resize(ref, (640, 640), interpolation=cv2.INTER_AREA).astype(int)).mean())
         print(f"seek {target}: from keyframe {hw.keyframe_before(target)[0]} in {took:.1f} s, mean difference {diff:.1f} "
               f"-> {'same picture' if diff < 12 else 'DIFFERENT picture'}", flush=True)
+        for i in range(target + 1, target + 12):   # the full-resolution branch after the seek: same frame as the main one
+            ok, _ = hw.read()
+            ok2, ref = cpu.read()
+            if ok and ok2 and hw.last_hires is not None:
+                d = float(np.abs(hw.last_hires.astype(int) - ref.astype(int)).mean())
+                print(f"   full frame at {i}: mean difference {d:.1f} -> {'same picture' if d < 12 else 'DIFFERENT picture'}")
+                break
+        else:
+            print("   no full-resolution frame within 11 frames after the seek -> FAILED")
     # never forced: 13/11 a forced stop on 246 left a ghost decoder session (CMA 16 MB, every camera failed)
     if not stop_gracefully(hw._proc, timeout_s=30, force=False):
         print("!! the decoder did not stop in 30 s: left running, it ends at the end of the file")

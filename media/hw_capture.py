@@ -294,7 +294,7 @@ class HwCapture:
         os.close(frames_write)   # the child holds it; EOF when the pipeline ends
         self._proc.stdout = os.fdopen(frames_read, "rb", buffering=0)   # read / skip / stop_gracefully read it as before
         threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True).start()
-        self.index = start
+        self.index = self._first = start   # the branch's full frames count from this pipeline's first frame
         if hires_read is not None:
             os.close(hires_write)  # the child holds it; EOF when the pipeline ends
             self._hires, self._hires_cv = {}, threading.Condition()
@@ -326,9 +326,11 @@ class HwCapture:
                 k += 1
 
     def _hires_for(self, index: int, timeout_s: float = 2.0):
-        if not self.hires_every or index % self.hires_every:
+        # 14/11: counted from the pipeline's first frame, not frame 0: after a seek to a keyframe like 1227, frame
+        # 1230 got full frame k = 246 of a branch whose k = 0 was frame 1227 (3 of 60 plate crops on 252 off)
+        if not self.hires_every or (index - self._first) % self.hires_every:
             return None
-        k = index // self.hires_every
+        k = (index - self._first) // self.hires_every
         with self._hires_cv:
             self._hires_cv.wait_for(lambda: k in self._hires or None in self._hires, timeout_s)
             return self._hires.pop(k, None)
