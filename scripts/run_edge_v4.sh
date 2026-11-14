@@ -58,15 +58,26 @@ cma() { awk '/CmaFree/ {print int($2/1024)}' /proc/meminfo 2>/dev/null | grep . 
 # 7/11: CMA (shared by the NPU and the video decoder) went from 68 to 9 MB over a few runs and only a reboot freed it.
 echo "CmaFree before: $(cma) MB" | tee "$out/cma.txt"
 
-# 2. clean leftovers of earlier runs (only ours: our stream id, our DLCs); SIGINT first so they can close their sessions
-# (no pgrep on 247: its agents end with the run, there are no NPU daemons to leave behind)
-if command -v pgrep >/dev/null && { pgrep -f -- "--stream-id v4-run" >/dev/null || pgrep -f -- "--dlc $head" >/dev/null || pgrep -f -- "--dlc $YOLO11S_DLC" >/dev/null || pgrep -f -- "--dlc ${YOLOV8N_DLC:-none}" >/dev/null; }; then
-  echo "leftovers from an earlier run: stopping them"
+# 2. clean leftovers (only ours: our stream id, our DLCs, our main-stream publishers); SIGINT first so they can close
+# their sessions. Run before and after every run: 14/11 on 252 a camera that timed out left its ffmpeg main-stream
+# publisher looping and the plate NPU daemon running into the next run (no pgrep on 247: nothing outlives its run).
+# MediaMTX stays on purpose (reused by the next run).
+PUBLISHER="_main.mp4 -c copy -an"   # media/copy_publisher.py's ffmpeg
+clean_leftovers() {
+  command -v pgrep >/dev/null || return 0
+  local found=0 dlc
+  pgrep -f -- "--stream-id v4-run" >/dev/null && found=1
+  pgrep -f -- "$PUBLISHER" >/dev/null && found=1
+  for dlc in "$head" "$YOLO11S_DLC" "${YOLOV8N_DLC:-none}" "${PLATE_DLC:-none}"; do pgrep -f -- "--dlc $dlc" >/dev/null && found=1; done
+  (( found )) || return 0
+  echo "leftovers of a run ($1): stopping them"
   pkill -INT -f -- "--stream-id v4-run" 2>/dev/null; sleep 5
   for dlc in "$head" "$YOLO11S_DLC" "${YOLOV8N_DLC:-none}" "${PLATE_DLC:-none}"; do pkill -f -- "--dlc $dlc" 2>/dev/null; done
+  pkill -f -- "$PUBLISHER" 2>/dev/null   # plain ffmpeg stream copy, no decoder session
   sleep 2
   echo "CmaFree after cleanup: $(cma) MB" | tee -a "$out/cma.txt"
-fi
+}
+clean_leftovers "before"
 
 # 3. local MediaMTX for the main streams
 if ! (exec 3<>/dev/tcp/127.0.0.1/8554) 2>/dev/null; then
@@ -115,5 +126,6 @@ for item in $spec; do
 done
 wait
 sleep 2
+clean_leftovers "after"
 "$py" -B "$here/scripts/v4_run_summary.py" "$out"
 echo "NPU daemons left: $(if command -v pgrep >/dev/null; then pgrep -fc snpe-daemon; else echo n/a; fi) | CmaFree after the run: $(cma) MB ($(head -1 "$out/cma.txt"))"
