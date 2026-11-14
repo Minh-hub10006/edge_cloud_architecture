@@ -7,6 +7,7 @@ the same way) and the mean pixel difference (same picture: a few levels; a shear
 """
 import argparse
 import os
+import time
 
 import cv2
 import numpy as np
@@ -20,6 +21,7 @@ def main():
     ap.add_argument("--decoder", default="qtic2vdec")
     ap.add_argument("--out", default=os.path.expanduser("~/hw_dump"))
     ap.add_argument("--frames", type=int, nargs="+", default=[0, 300, 1000])
+    ap.add_argument("--seek", type=int, nargs="*", default=[], help="then jump to these frames (restart path, 14/11)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     hw, cpu = HwCapture(a.video, decoder=a.decoder, size=640, hires_every=5), cv2.VideoCapture(a.video)
@@ -42,9 +44,24 @@ def main():
             print(f"frame {i}: hw {px.shape} vs cpu, mean difference {diff:.1f} levels "
                   f"-> {'same picture' if diff < 12 else 'DIFFERENT picture'}", flush=True)
         i += 1
+    for target in a.seek:   # HwCapture.set = what a decoder restart does: from the keyframe before, never from frame 0
+        t = time.monotonic()
+        ok = hw.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ok, px = hw.read() if ok else (False, None)
+        took = time.monotonic() - t
+        cpu.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ok2, ref = cpu.read()
+        if not (ok and ok2):
+            print(f"seek {target}: hw {ok} cpu {ok2} -> FAILED")
+            continue
+        diff = float(np.abs(px.astype(int) - cv2.resize(ref, (640, 640), interpolation=cv2.INTER_AREA).astype(int)).mean())
+        print(f"seek {target}: from keyframe {hw.keyframe_before(target)[0]} in {took:.1f} s, mean difference {diff:.1f} "
+              f"-> {'same picture' if diff < 12 else 'DIFFERENT picture'}", flush=True)
     # never forced: 13/11 a forced stop on 246 left a ghost decoder session (CMA 16 MB, every camera failed)
     if not stop_gracefully(hw._proc, timeout_s=30, force=False):
         print("!! the decoder did not stop in 30 s: left running, it ends at the end of the file")
+    if hw._feeder is not None:
+        hw._feeder.kill()
 
 
 if __name__ == "__main__":

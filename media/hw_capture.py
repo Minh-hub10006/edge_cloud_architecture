@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import select
+import shutil
 import signal
 import subprocess
 import threading
@@ -82,6 +83,19 @@ def stop_gracefully(proc, timeout_s: float = 5.0, force: bool = True) -> bool:
         return False
 
 
+def parse_keyframes(ffprobe_csv: str) -> list[tuple[int, float]]:
+    """ffprobe packet=pts_time,flags CSV -> [(display index, pts s)] of the keyframes."""
+    pkts = []
+    for line in ffprobe_csv.splitlines():
+        parts = line.strip().split(",")
+        try:
+            pkts.append((float(parts[0]), "K" in parts[1]))
+        except (IndexError, ValueError):
+            continue
+    pkts.sort()
+    return [(i, t) for i, (t, key) in enumerate(pkts) if key]
+
+
 def find_stride(log: str, width: int, height: int) -> int:
     """Row stride from the per-buffer sizes GStreamer's identity prints ("... (3317760 bytes, ..."): one NV12 frame each."""
     import re
@@ -148,6 +162,8 @@ class HwCapture:
         self.width, self.height = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = probe.get(cv2.CAP_PROP_FPS)
         self.frame_count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)   # tells a decoder failure from the file's end
+        self._keyframes = None   # [(frame index, pts seconds)] of the file's keyframes, read on the first seek
+        self._feeder = None      # ffmpeg feeding the decoder from a keyframe (seek), else None
         probe.release()
         if not self.width or not self.height:
             raise RuntimeError(f"cannot read the size of {source}")
@@ -226,27 +242,59 @@ class HwCapture:
                                f"(an ENOMEM on /dev/video32 needs a reboot of the Edge)")
         return out + err
 
-    def _start(self) -> None:
+    def keyframe_before(self, target: int) -> tuple[int, float]:
+        """(index, pts s) of the last keyframe at or before frame `target`; (0, 0.0) when unknown (no ffprobe, RTSP).
+        Indexes are in display order (packets sorted by pts)."""
+        if self._keyframes is None:
+            self._keyframes = [(0, 0.0)]
+            if os.path.isfile(self.source) and shutil.which("ffprobe", path=SYSTEM_ENV["PATH"]) \
+                    and shutil.which("ffmpeg", path=SYSTEM_ENV["PATH"]):
+                try:
+                    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                          "packet=pts_time,flags", "-of", "csv=p=0", self.source], env=SYSTEM_ENV,
+                                         capture_output=True, text=True, timeout=120).stdout
+                    self._keyframes = parse_keyframes(out) or [(0, 0.0)]
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+        return max((k for k in self._keyframes if k[0] <= target), default=(0, 0.0))
+
+    def _start(self, seek_frame: int = 0) -> None:
+        """seek_frame > 0: ffmpeg copies the stream from the last keyframe at or before it (no decoding of what comes
+        before; 14/11 on 252 a restart decoded from the file's start, could not reach frame ~2000 under load, and the
+        camera stopped). The caller skips the few frames from that keyframe to the target."""
         self._buf = bytearray(self.frame_bytes)  # reused for every frame: nv12_to_bgr copies it into the frame
+        head, chain, start = self.head, self.chain, 0
+        if seek_frame > 0:
+            start, pts = self.keyframe_before(seek_frame)
+        if start > 0:
+            self._feeder = subprocess.Popen(
+                ["ffmpeg", "-v", "error", "-ss", f"{pts + .5 / self.fps:.6f}", "-i", self.source, "-map", "0:v:0",
+                 "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"],   # +half a frame: never the keyframe before
+                env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            head = ["fdsrc", "fd=0", "!", *self.head[self.head.index("h264parse"):]]
+            chain = head + self.chain[len(self.head):]
         # Frames go through their own pipe, never stdout: 13/11 on 252 qtic2vdec's library printed 64 KiB of log lines
         # ("QC2TargetSpec: Video Core Features...") to stdout ahead of the frames; every picture the model got was moved
         # by 65536 bytes (colours rotated, last 34 rows lost) and every box on 252 was wrong. Library logs -> /dev/null.
         frames_read, frames_write = os.pipe()
-        cmd, pass_fds, hires_read = (["gst-launch-1.0", "-e", "-q", *self.chain, "!", "fdsink", f"fd={frames_write}"],
+        cmd, pass_fds, hires_read = (["gst-launch-1.0", "-e", "-q", *chain, "!", "fdsink", f"fd={frames_write}"],
                                      (frames_write,), None)
         if self.hires_every:
             hires_read, hires_write = os.pipe()
-            cmd = ["gst-launch-1.0", "-e", "-q", *self.head, "!", "tee", "name=t",
-                   "t.", "!", "queue", *self.chain[len(self.head):], "!", "fdsink", f"fd={frames_write}",
+            cmd = ["gst-launch-1.0", "-e", "-q", *head, "!", "tee", "name=t",
+                   "t.", "!", "queue", *chain[len(head):], "!", "fdsink", f"fd={frames_write}",
                    "t.", "!", "queue", "!", "videorate", "drop-only=true", f"max-rate={self.hires_rate}",
                    *self.hires_chain, "!", "fdsink", f"fd={hires_write}"]
             pass_fds = (frames_write, hires_write)
         self._proc = subprocess.Popen(cmd, env=SYSTEM_ENV, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                      stdin=self._feeder.stdout if self._feeder else None,
                                       pass_fds=pass_fds, preexec_fn=_interrupt_when_parent_dies)
+        if self._feeder:
+            self._feeder.stdout.close()   # the decoder holds it
         os.close(frames_write)   # the child holds it; EOF when the pipeline ends
         self._proc.stdout = os.fdopen(frames_read, "rb", buffering=0)   # read / skip / stop_gracefully read it as before
         threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True).start()
-        self.index = 0
+        self.index = start
         if hires_read is not None:
             os.close(hires_write)  # the child holds it; EOF when the pipeline ends
             self._hires, self._hires_cv = {}, threading.Condition()
@@ -379,9 +427,9 @@ class HwCapture:
     def set(self, prop: int, value) -> bool:
         if prop != CAP_PROP_POS_FRAMES or self.dead:   # gave up: the loop rewind must not open a new session either
             return False
-        self.release()  # rewind = restart; a start frame is reached by decoding and dropping (cheap on the video block)
-        self._start()
         target = int(value)
+        self.release()  # rewind = restart; from the keyframe before the target, then decode and drop the rest
+        self._start(seek_frame=target)
         while self.index < target:
             if not self._skip_frame():
                 return False
@@ -408,3 +456,7 @@ class HwCapture:
         proc, self._proc = self._proc, None
         if not stop_gracefully(proc, timeout_s=15, force=False):
             print("[HwCapture] decoder did not stop in 15 s after SIGINT: left to finish by itself", flush=True)
+        feeder, self._feeder = self._feeder, None
+        if feeder is not None:   # plain ffmpeg stream copy, no decoder session: safe to kill
+            feeder.kill()
+            feeder.wait()

@@ -13,6 +13,8 @@ from time import monotonic_ns, time_ns
 from contracts import FrameIdentity
 from edge_agent import CapturedFrame
 
+SEEK_LATE_FRAMES = 30   # 2 s at 15 fps: later than this, seek instead of decoding each late frame
+
 
 class OpenCVFrameSource:
     def __init__(
@@ -136,6 +138,17 @@ class OpenCVFrameSource:
                         # played at 15, so analytics fell 3-21 s behind the video and no box matched its frame. A live
                         # camera gives the newest frame: drop the late ones (their numbers still count).
                         late = int(-delay_ns // period_ns) - 1
+                        # 14/11: more than 2 s late -> jump (seek) instead of decoding every late frame: on 252 the
+                        # decoders burnt 4.3 cores catching up. The file position is the frame in the file (loops wrap).
+                        pos = await asyncio.to_thread(cap.get, cv2.CAP_PROP_POS_FRAMES)
+                        total = await asyncio.to_thread(cap.get, cv2.CAP_PROP_FRAME_COUNT)
+                        if late >= SEEK_LATE_FRAMES and 0 <= pos + late < (total or 0) and (
+                                self.max_frames is None or frame_id + late < self.max_frames):
+                            if await asyncio.to_thread(cap.set, cv2.CAP_PROP_POS_FRAMES, pos + late) and \
+                                    await asyncio.to_thread(cap.get, cv2.CAP_PROP_POS_FRAMES) == pos + late:
+                                frame_id += late
+                                self.frames_skipped += late
+                                late = 0
                         for _ in range(late):
                             if self.max_frames is not None and frame_id + 1 >= self.max_frames:
                                 break

@@ -110,6 +110,34 @@ class LateConsumerSourceTests(unittest.TestCase):
         self.assertEqual(len(ids) + source.frames_skipped, ids[-1] + 1)   # every number is the file's own
 
 
+class LateJumpSourceTests(unittest.TestCase):
+    def test_far_behind_the_source_seeks_and_every_frame_still_shows_its_own_number(self):
+        # 14/11 on 252: catching up by decoding every late frame burnt 4.3 cores; > 2 s late now seeks
+        cv2 = __import__("cv2")
+        import numpy as np
+        from media.opencv_source import SEEK_LATE_FRAMES, OpenCVFrameSource
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "clip.avi")
+            writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"MJPG"), 50, (64, 48))
+            for i in range(200):
+                writer.write(np.full((48, 64, 3), i, np.uint8))   # the frame's number in its pixels
+            writer.release()
+
+            async def read():
+                source = OpenCVFrameSource(path, node_id="n", camera_id="c", stream_id="s", max_frames=200)
+                seen = []
+                async for frame in source:
+                    seen.append((frame.identity.source_frame_id, int(frame.pixels.mean().round())))
+                    if len(seen) == 5:
+                        await asyncio.sleep(1.5)   # 75 frames late at 50 fps: more than SEEK_LATE_FRAMES
+                return source, seen
+            source, seen = asyncio.run(read())
+        self.assertGreater(75, SEEK_LATE_FRAMES)
+        self.assertGreaterEqual(source.frames_skipped, 70)
+        for frame_id, value in seen:
+            self.assertLessEqual(abs(frame_id - value), 2, (frame_id, value))   # number == picture (MJPG rounding)
+
+
 class ClockOriginSourceTests(unittest.TestCase):
     def test_frame_numbers_follow_the_main_streams_clock_not_the_sources_opening(self):
         # 12/11 on 252: the main stream started seconds before the source had opened its decoder; the video stayed

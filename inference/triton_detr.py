@@ -56,6 +56,16 @@ class TritonSession:
             self._forget_thread_regions()
             return self._run(names, feed)
 
+    def _drop(self, client, region):
+        import tritonclient.utils.shared_memory as shm
+        key, handle, _ = region
+        try:
+            client.unregister_system_shared_memory(key)
+        finally:
+            shm.destroy_shared_memory_region(handle)
+            with self._lock:
+                self._regions = [r for r in self._regions if r[1] != key]
+
     def _forget_thread_regions(self):
         import tritonclient.utils.shared_memory as shm
         st = self._thread_state()
@@ -76,7 +86,11 @@ class TritonSession:
             t = grpcclient.InferInput(name, list(x.shape), _DTYPES[x.dtype])
             if self.shm and x.nbytes >= _SHM_MIN_BYTES:
                 region = st["shm"].get(name)
-                if region is None or region[2] != x.nbytes:
+                if region is None or region[2] < x.nbytes:
+                    # 14/11: a new region per new size, the old one never freed (UC4 pose batches of 1-4 crops): the
+                    # slow worker and Triton each held ~12 GB. Now one region per thread and input, grown when needed.
+                    if region is not None:
+                        self._drop(st["client"], region)
                     key = f"v4_{self.model}_{uuid4().hex[:12]}"
                     handle = shm.create_shared_memory_region(key, f"/{key}", x.nbytes)
                     st["client"].register_system_shared_memory(key, f"/{key}", x.nbytes)

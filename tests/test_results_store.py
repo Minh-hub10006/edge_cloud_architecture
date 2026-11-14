@@ -237,7 +237,7 @@ class HwCaptureTests(unittest.TestCase):
         cap = HwCapture.__new__(HwCapture)
         cap.frame_bytes, cap.index, cap.dead = 12, 0, False
 
-        def start():
+        def start(seek_frame=0):
             cap._proc, cap.index = SimpleNamespace(stdout=Pipe()), 0
         with mock.patch.object(cap, "release"), mock.patch.object(cap, "_start", side_effect=start), \
                 mock.patch.object(cap, "_readable", return_value=True):
@@ -377,3 +377,10 @@ class NodeResultsTopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sorted(sent), [(CLOUD_RESULTS_TOPIC, key), (CLOUD_RESULTS_TOPIC + ".edge-246", key)])
         with self.assertRaises(ValueError):
             node_results_topic(CLOUD_RESULTS_TOPIC, "bad node/x")
+
+
+class KeyframeTests(unittest.TestCase):
+    def test_keyframes_in_display_order_from_ffprobe_csv(self):
+        from media.hw_capture import parse_keyframes
+        csv = "0.000000,K__\n0.066667,___\n0.133333,___\n2.000000,K__\n0.200000,___\nbad line\n2.066667,___\n"
+        self.assertEqual(parse_keyframes(csv), [(0, 0.0), (4, 2.0)])   # sorted by time: the 2 s keyframe is frame 4

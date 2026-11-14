@@ -72,6 +72,16 @@ class RestartTests(unittest.TestCase):
             self.assertEqual(out[0].tolist(), [1.0, 1.0])
             self.assertEqual((server.calls, len(server.registered), len(s._regions)), (3, 1, 1))
 
+    def test_batches_of_different_sizes_keep_one_region_per_input(self):
+        # 14/11: UC4 pose batches of 1-4 crops made a new region per size and never freed the old (~12 GB)
+        server = FakeServer()
+        with mock.patch.dict(sys.modules, fake_modules(server)):
+            from inference.triton_detr import TritonSession
+            s = TritonSession("pose_rtmo_s", "x:1")
+            for n in (1, 2, 4, 3, 1, 4, 2):
+                s.run(["out"], {"input": np.zeros((n, 3, 640, 640), np.float32)})
+            self.assertEqual((len(server.registered), len(s._regions)), (1, 1))   # grown to the batch of 4, reused
+
     def test_other_errors_are_not_retried(self):
         server = FakeServer()
         with mock.patch.dict(sys.modules, fake_modules(server)):
