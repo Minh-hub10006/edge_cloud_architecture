@@ -74,10 +74,14 @@ class SplitAdapterTests(unittest.TestCase):
         adapter = RtdetrSplitAdapter(head_id="h", session=FakeTail(), confidence=.5)
         boxes, ms = adapter.infer(pack(t, width=960, height=540, head_id="h"))
         self.assertEqual(seen["orig_target_sizes"].tolist(), [[960, 540]])
-        lo, hi = seen["cut_range"][0]
-        deq = seen["cut_u8"].astype(np.float32) * ((hi - lo) / 255) + lo  # what the uint8 tail computes on the GPU
-        self.assertEqual(seen["cut_u8"].dtype, np.uint8)
+        deq = seen["cut_q"].astype(np.float32) * seen["cut_step"][0][:, None, None] + seen["cut_lo"][0][:, None, None]
+        self.assertEqual(seen["cut_q"].dtype, np.uint8)   # what the quantized tail computes on the GPU
         self.assertLess(float(np.abs(deq - t).max()), (t.max() - t.min()) / 255)
+        adapter.infer(pack(t, width=960, height=540, head_id="h", bits=2))   # CUT2: one range per channel
+        step = seen["cut_step"][0]
+        self.assertEqual((seen["cut_q"].max(), step.shape), (3, (t.shape[1],)))
+        deq = seen["cut_q"].astype(np.float32) * step[:, None, None] + seen["cut_lo"][0][:, None, None]
+        self.assertLessEqual(float(np.abs(deq - t).max()), float(step.max()) / 2 + 1e-6)
         self.assertEqual(len(boxes), 1)
         self.assertAlmostEqual(boxes[0].left, .1, places=4)
         self.assertAlmostEqual(boxes[0].bottom, .5, places=4)
@@ -85,6 +89,30 @@ class SplitAdapterTests(unittest.TestCase):
             adapter.infer(pack(t, width=960, height=540, head_id="other"))
         with self.assertRaisesRegex(ValueError, "HEAD_ID"):
             RtdetrSplitAdapter(head_id="", session=FakeTail())
+
+
+def cut2_tolerance(t):
+    """Largest rounding error of the default wire (CUT2, 2 bits): half a step of the widest channel."""
+    return float(((t.max(axis=(2, 3)) - t.min(axis=(2, 3))) / 3).max()) / 2 + 1e-6
+
+
+class Cut2WireTests(unittest.TestCase):
+    def test_two_and_four_bit_round_trip_per_channel_and_refuse_bad_packets(self):
+        rng = np.random.default_rng(0)
+        t = np.maximum(rng.normal(size=(1, 8, 6, 5)), 0).astype(np.float32) * np.arange(1, 9)[None, :, None, None]
+        for bits in (2, 4):
+            data = pack(t, width=960, height=540, head_id="h", bits=bits)
+            self.assertEqual(data[:4], b"CUT2")
+            back, w, h = unpack(data, expected_head_id="h")
+            step = (t.max(axis=(2, 3)) - t.min(axis=(2, 3))) / (2 ** bits - 1)
+            self.assertEqual((w, h, back.shape), (960, 540, t.shape))
+            self.assertTrue((np.abs(back - t) <= step[:, :, None, None] / 2 + 1e-6).all())   # per-channel rounding
+            with self.assertRaisesRegex(ValueError, "expected"):
+                unpack(data, expected_head_id="other")
+            with self.assertRaises(ValueError):
+                unpack(data[:-20], expected_head_id="h")
+        with self.assertRaises(ValueError):
+            pack(t, width=960, height=540, head_id="h", bits=3)
 
 
 class SplitServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -135,7 +163,7 @@ class EdgeHeadTests(unittest.TestCase):
         data, stages = head.encode(np.full((540, 960, 3), 128, np.uint8))
         back, w, h = unpack(data, expected_head_id=HEAD_ID)
         self.assertEqual((w, h), (960, 540))
-        self.assertLessEqual(float(np.abs(back - nchw).max()), (nchw.max() - nchw.min()) / 255)
+        self.assertLessEqual(float(np.abs(back - nchw).max()), cut2_tolerance(nchw))   # default wire: 2 bits per channel
         self.assertEqual(set(stages), {"prepare_ms", "npu_ms", "pack_ms"})
 
     def test_concurrent_frames_never_read_each_others_shared_memory_output(self):
@@ -178,7 +206,7 @@ class GpuHeadTests(unittest.TestCase):
         self.assertEqual(seen, [(1, 3, 640, 640)])
         back, w, h = unpack(data, expected_head_id=(HEAD_ID, ONNX_HEAD_ID))
         self.assertEqual((w, h), (960, 540))
-        self.assertLessEqual(float(np.abs(back - nchw).max()), (nchw.max() - nchw.min()) / 255)
+        self.assertLessEqual(float(np.abs(back - nchw).max()), cut2_tolerance(nchw))   # default wire: 2 bits per channel
         with self.assertRaisesRegex(ValueError, "expected"):
             unpack(data, expected_head_id=HEAD_ID)          # an NPU-only Cloud refuses the GPU head
         adapter = RtdetrSplitAdapter(head_id=f"{HEAD_ID}, {ONNX_HEAD_ID}", session=SimpleNamespace(run=None))

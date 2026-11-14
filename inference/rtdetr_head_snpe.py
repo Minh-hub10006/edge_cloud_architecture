@@ -8,12 +8,17 @@ accepts tensors whose head id matches RTDETR_SPLIT_HEAD_ID.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import threading
 from time import perf_counter
 
 import numpy as np
 
 from contracts.cut_tensor import pack
+
+# 14/11: 2 bits per value, one range per channel (CUT2): ~90 KB instead of ~450 KB, F1 0.839 vs 0.8445 on UA-DETRAC
+# (scripts/compress_survey.py). V4_CUT_BITS=8 sends the old CUT1 uint8 tensor.
+CUT_BITS = int(os.getenv("V4_CUT_BITS", "2"))
 
 HEAD_ID = "rtl2-w8a8pc"
 DLC_SHA256 = "2e0c4b09df237165efb70e22e0ca47ff0845b8af58d7dd8c6290103589a5f673"
@@ -62,7 +67,7 @@ class RtdetrHeadSnpe:
             nhwc = np.array(outs[OUTPUT], dtype=np.float32).reshape(CUT_SHAPE_NHWC)
         t2 = perf_counter()
         data = pack(np.ascontiguousarray(nhwc.transpose(0, 3, 1, 2)), width=bgr.shape[1], height=bgr.shape[0],
-                    head_id=self.head_id)
+                    head_id=self.head_id, bits=CUT_BITS)
         t3 = perf_counter()
         return data, {"prepare_ms": (t1 - t0) * 1000, "npu_ms": (t2 - t1) * 1000, "pack_ms": (t3 - t2) * 1000}
 
@@ -94,7 +99,7 @@ class RtdetrHeadOnnx:
         _, outs = self.session.infer_raw(x)
         t2 = perf_counter()
         data = pack(np.ascontiguousarray(outs[OUTPUT], dtype=np.float32), width=bgr.shape[1], height=bgr.shape[0],
-                    head_id=self.head_id)
+                    head_id=self.head_id, bits=CUT_BITS)
         t3 = perf_counter()
         return data, {"prepare_ms": (t1 - t0) * 1000, "npu_ms": (t2 - t1) * 1000, "pack_ms": (t3 - t2) * 1000}
 

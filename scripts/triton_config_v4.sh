@@ -17,7 +17,7 @@ container=v4-triton
 image=nvcr.io/nvidia/tritonserver:25.08-py3
 # 12/11, 3 Edges x 4 cams: D-FINE-X (1 instance, batch ~1.02, ~15 ms) got ~50 % of D frames while the GPU averaged 18 %:
 # a second instance, and 6 slots (was 4: 5 fast-lane instances were already sharing them).
-FAST="rtdetr_full:2 rtdetr_tail_u8:2 dfinex_full:2 rtdetr_tail:1"
+FAST="rtdetr_full:2 rtdetr_tail_q:2 rtdetr_tail_u8:2 dfinex_full:2 rtdetr_tail:1"   # tail_q: CUT2 wire (14/11)
 # name:max batch:max queue delay us (P3 adds pose / action). 10/11 level 3: a DM-Count batch of 4 at 1280 holds the GPU
 # ~140 ms and, sharing slots with the fast lane, cut B/C/D to 46 % of frames at ~295 ms; batch 1 (~35 ms) and taking
 # every slot (it runs only on an idle GPU, the fast lane waits at most one such run) is the next try.
@@ -160,8 +160,8 @@ case "${1:?show|queue|add-crowd ONNX|add NAME ONNX|trt [MODELS]|trt-off|ratelimi
     docker restart "$container" >/dev/null && ready
     ;;
   add)
-    name="${2:?model name listed in SLOW}"; onnx="${3:?MODEL.onnx}"
-    [[ " $SLOW " == *" $name:"* ]] || { echo "$name is not in SLOW" >&2; exit 2; }
+    name="${2:?model name listed in SLOW or FAST}"; onnx="${3:?MODEL.onnx}"
+    [[ " $SLOW $FAST " == *" $name:"* ]] || { echo "$name is not in SLOW or FAST" >&2; exit 2; }
     backup
     mkdir -p "$repo/$name/1" && cp "$onnx" "$repo/$name/1/model.onnx"
     sha256sum "$repo/$name/1/model.onnx" | cut -c1-16

@@ -168,6 +168,7 @@ def nv12_to_bgr(buf, width: int, height: int, stride: int):
 
 
 class HwCapture:
+    _first = 0   # first frame of the running pipeline (a seek starts it at a keyframe); full frames count from it
     def __init__(self, source: str, *, decoder: str = "v4l2h264dec", io_mode: str | None = None, size: int = 0,
                  hires_every: int = 0):
         """hires_every (with size, 8/11 slow lane): a second branch of the same decoder gives the full-resolution frame

@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import numpy as np
 
-from contracts.cut_tensor import unpack_u8
+from contracts.cut_tensor import unpack_codes
 from .detection_decode import rtdetr_decode
 from .model_artifact import OUTPUT_NAMES
 
@@ -117,10 +117,10 @@ class TritonSession:
 
 
 class RtdetrSplitAdapter:
-    """Path B Cloud half: cut tensor (contracts/cut_tensor.py) -> Triton rtdetr_tail_u8 -> boxes, decoded exactly like
-    the full RT-DETRv2-S adapter. The tail takes the wire uint8 + (min, max) and dequantizes on the GPU
-    (scripts/tail_uint8.py, bit-identical to the float tail), so the CPU only runs zstd. Refuses tensors from any
-    head other than RTDETR_SPLIT_HEAD_ID."""
+    """Path B Cloud half: cut tensor (contracts/cut_tensor.py, CUT1 or CUT2) -> Triton rtdetr_tail_q -> boxes, decoded
+    exactly like the full RT-DETRv2-S adapter. The tail takes the codes + per-channel (lo, step) and dequantizes on the
+    GPU (scripts/tail_quant.py, identical to the float tail), so the CPU only runs zstd and the bit unpacking.
+    Refuses tensors from any head other than RTDETR_SPLIT_HEAD_ID."""
 
     kind = "rtdetrv2_small"
     runtime = "triton"
@@ -133,12 +133,12 @@ class RtdetrSplitAdapter:
         if not 0 <= confidence <= 1 or type(top_k) is not int or not 1 <= top_k <= 300:
             raise ValueError("confidence must be 0..1 and top_k 1..300")
         self.head_id, self.model_id, self.confidence, self.top_k = heads, model_id, confidence, top_k
-        self.session = session or TritonSession("rtdetr_tail_u8")
+        self.session = session or TritonSession("rtdetr_tail_q")
 
     @property
     def settings(self):
-        return {"kind": "rtdetrv2_small_split", "head_id": ",".join(self.head_id), "cut": "layer2 (res_layers.1) uint8 in",
-                "confidence": self.confidence, "top_k": self.top_k, "wire": "uint8+zstd (contracts/cut_tensor.py)",
+        return {"kind": "rtdetrv2_small_split", "head_id": ",".join(self.head_id), "cut": "layer2 (res_layers.1) quantized codes in",
+                "confidence": self.confidence, "top_k": self.top_k, "wire": "CUT1 uint8 / CUT2 2-bit per channel + zstd (contracts/cut_tensor.py)",
                 "label_map": "coco80_contiguous", "runtime": self.runtime}
 
     def infer(self, payload: bytes):
@@ -147,11 +147,11 @@ class RtdetrSplitAdapter:
 
     def infer_detailed(self, payload: bytes):
         started = perf_counter()
-        q, lo, hi, width, height = unpack_u8(payload, expected_head_id=self.head_id)
+        q, lo, step, width, height = unpack_codes(payload, expected_head_id=self.head_id)
         prepared = perf_counter()
         names = list(OUTPUT_NAMES[self.kind])
         out = dict(zip(names, self.session.run(names, {
-            "cut_u8": q, "cut_range": np.array([[lo, hi]], dtype=np.float32),
+            "cut_q": q, "cut_lo": lo, "cut_step": step,
             "orig_target_sizes": np.array([[width, height]], dtype=np.int64)})))
         inferred = perf_counter()
         boxes = rtdetr_decode(out, width, height, self.confidence, self.top_k)
