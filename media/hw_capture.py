@@ -265,23 +265,40 @@ class HwCapture:
     def _probe_once(self, chain) -> str:
         # identity prints each buffer's size. Stop after 30 frames like scripts/hw_decode_check.py (run 4 times on 246): the
         # V4L2 decoder holds several frames, and an EOS after only 5 reached it before any output ("device busy", no preroll).
+        # 14/11: 252's older GStreamer ignores eos-after, so its probe decoded the whole file; with the full-size frames
+        # converted on the CPU that took over 60 s ("hung"). The identity lines are counted here and the probe is
+        # stopped with SIGINT after 30 frames on every GStreamer version.
         p = subprocess.Popen(["gst-launch-1.0", "-e", "-v", *chain, "!", "identity", "silent=false", "eos-after=30", "!",
-                              "fakesink", "sync=false"], env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              "fakesink", "sync=false"], env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, preexec_fn=_interrupt_when_parent_dies)
+        lines, frames = [], [0]
+
+        def read():
+            for line in p.stdout:
+                lines.append(line)
+                if re.search(r"\(\d+ bytes", line):
+                    frames[0] += 1
+                    if frames[0] == 30:
+                        p.send_signal(signal.SIGINT)
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
         try:
-            out, err = p.communicate(timeout=60)
+            p.wait(timeout=60)
         except subprocess.TimeoutExpired:
             # 10/11: subprocess.run's timeout SIGKILLs, and a killed decoder session stays a ghost in msm_vidc (no new
             # session opens until a reboot). SIGINT first so GStreamer closes it, kill only if that does not end it.
             p.send_signal(signal.SIGINT)
             try:
-                out, err = p.communicate(timeout=10)
+                p.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 p.kill()
-                out, err = p.communicate()
+                p.wait()
+            reader.join(5)
             raise TimeoutError(f"hardware decoder probe hung for 60 s (stopped with SIGINT): "
-                               f"{' | '.join((out + err).strip().splitlines()[-3:])}")
-        if p.returncode:
+                               f"{' | '.join(''.join(lines).strip().splitlines()[-3:])}")
+        reader.join(5)
+        out, err = "".join(lines), ""
+        if p.returncode and frames[0] < 30:   # stopped by our SIGINT after 30 frames is a success
             log = out + err
             tail = " | ".join(log.strip().splitlines()[-4:])
             hint = ""

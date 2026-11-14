@@ -144,16 +144,17 @@ class ProbeStopTests(unittest.TestCase):
         sent = []
 
         class Hung:
-            returncode = None
+            returncode = 1
 
             def __init__(self, *a, **k):
                 self.calls = 0
+                self.stdout = iter(["ERROR: no preroll\n"])   # no frame ever comes out
 
-            def communicate(self, timeout=None):
+            def wait(self, timeout=None):
                 self.calls += 1
                 if self.calls == 1:
                     raise subprocess.TimeoutExpired("gst", timeout)
-                return "", "ERROR: no preroll"
+                return 1
 
             def send_signal(self, sig):
                 sent.append(sig)
@@ -167,3 +168,35 @@ class ProbeStopTests(unittest.TestCase):
                 cap._probe_retrying(["filesrc"])
         # each try ended after SIGINT: never SIGKILL (ghost sessions); 12/11 one retry after a hang
         self.assertEqual(sent, [signal.SIGINT, signal.SIGINT])
+
+
+class ProbeFrameCountTests(unittest.TestCase):
+    def test_the_probe_stops_itself_after_30_frames_when_eos_after_is_ignored(self):
+        # 14/11: 252's GStreamer ignores identity eos-after; the probe decoded the whole file and timed out
+        import signal
+        from unittest import mock
+        from media.hw_capture import HwCapture
+        sent = []
+
+        class Endless:
+            returncode = None
+
+            def __init__(self, *a, **k):
+                self.stdout = (f"/GstIdentity:identity0: last-message = chain ******* ({1228800} bytes, dts: x)\n"
+                               for _ in range(100000))
+
+            def send_signal(self, sig):
+                sent.append(sig)
+                self.stdout = iter([])
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                while self.returncode is None:
+                    pass
+                return 0
+        cap = object.__new__(HwCapture)
+        cap.decoder = "qtic2vdec"
+        with mock.patch("media.hw_capture.subprocess.Popen", Endless):
+            log = cap._probe_once(["filesrc"])
+        self.assertEqual(sent, [signal.SIGINT])
+        self.assertGreaterEqual(log.count("1228800 bytes"), 30)
