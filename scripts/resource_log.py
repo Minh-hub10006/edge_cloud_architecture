@@ -62,8 +62,8 @@ def max_temp():
 
 
 def procs(groups):
-    """group -> (cpu ticks, rss MB) summed over matching processes."""
-    out = {g: [0, 0.0] for g in groups}
+    """pid -> (group, cpu ticks, rss MB) for every matching process."""
+    out = {}
     for pid in filter(str.isdigit, os.listdir("/proc")):
         try:
             cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")
@@ -72,8 +72,7 @@ def procs(groups):
             continue
         for g, pat in groups.items():
             if re.search(pat, cmd):
-                out[g][0] += int(stat[11]) + int(stat[12])
-                out[g][1] += int(stat[21]) * os.sysconf("SC_PAGE_SIZE") / 2**20
+                out[pid] = (g, int(stat[11]) + int(stat[12]), int(stat[21]) * os.sysconf("SC_PAGE_SIZE") / 2**20)
                 break
     return out
 
@@ -140,8 +139,13 @@ def main():
             row = [round(cur[3] - t0, 1), round(100 * busy, 1), round(ram), round(cma),
                    round((cur[1][0] - prev[1][0]) * 8 / dt / 1e6, 2), round((cur[1][1] - prev[1][1]) * 8 / dt / 1e6, 2),
                    max_temp()]
-            row += [round((cur[2][g][0] - prev[2][g][0]) / TICK / dt, 2) for g in groups]
-            row += [round(cur[2][g][1]) for g in groups]
+            # per process, only those alive in both samples (14/11: a process ending made a group's sum go negative)
+            cores, mb = dict.fromkeys(groups, 0.0), dict.fromkeys(groups, 0.0)
+            for pid, (g, ticks, rss) in cur[2].items():
+                mb[g] += rss
+                if pid in prev[2]:
+                    cores[g] += (ticks - prev[2][pid][1]) / TICK / dt
+            row += [round(cores[g], 2) for g in groups] + [round(mb[g]) for g in groups]
             if a.role == "cloud":
                 row += gpu()
             w.writerow(row)
