@@ -269,9 +269,11 @@ class HwCapture:
         if start > 0:
             self._feeder = subprocess.Popen(
                 ["ffmpeg", "-v", "error", "-ss", f"{pts + .5 / self.fps:.6f}", "-i", self.source, "-map", "0:v:0",
-                 "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264", "-"],   # +half a frame: never the keyframe before
+                 "-c:v", "copy", "-f", "matroska", "-"],   # +half a frame: never the keyframe before
+                # Matroska, not raw H.264 (14/11): raw frames carry no timestamps, so the full-resolution branch's
+                # videorate kept other frames than 0, 5, 10... after a seek (picture difference 12.8 instead of ~1)
                 env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            head = ["fdsrc", "fd=0", "!", *self.head[self.head.index("h264parse"):]]
+            head = ["fdsrc", "fd=0", "!", "matroskademux", "!", *self.head[self.head.index("h264parse"):]]
             chain = head + self.chain[len(self.head):]
         # Frames go through their own pipe, never stdout: 13/11 on 252 qtic2vdec's library printed 64 KiB of log lines
         # ("QC2TargetSpec: Video Core Features...") to stdout ahead of the frames; every picture the model got was moved
