@@ -4,11 +4,12 @@
 
 ```
 giải mã (Edge) ─► khung 640 + (mỗi 5 khung) ảnh lớn ─► bộ đệm khung 3 s (làn sau)
+      │   (nguồn khung theo đồng hồ của luồng chính; trễ > 2 s thì nhảy tới khung đúng giờ, tối đa 1 lần / 5 s)
       │
       ├─ N / A: model trên Edge ─► ép đúng tỉ lệ ─► ByteTrack trên Edge ─► box + mã bám
       │                                                   └─► Kafka edge.tracked-result.v1 (chạy nền, không chờ) ─► DB
       │
-      └─ B / C / D: vé suy luận (tensor hoặc JPEG) ─► Kafka ─► worker Cloud (cùng camera → cùng worker)
+      └─ B / C / D: vé suy luận (tensor 2 bit ~90 KB hoặc JPEG ~76 KB) ─► Kafka ─► worker Cloud (cùng camera → cùng worker)
                          ─► Triton (gom lô) ─► ByteTrack trên Cloud ─► kết quả ─► Kafka (chung + riêng Edge)
                          ─► Edge nhận ─► box + mã bám ─► BUS làn sau          └─► DB (frames, detections)
 ```
@@ -48,6 +49,8 @@ ghi trạng thái mỗi cửa sổ 1 s (`--state-jsonl`) — đầu vào cho DRL
 | **Mất Kafka** (đã thử 40–55 s) | Edge không chờ Kafka trên đường xử lý khung (gửi nền, tối đa 64 tin, quá thì bỏ và đếm `kafka_background_dropped`); cách N/A chạy tiếp ~100 %; B/C/D mất đúng khoảng mất Kafka rồi chạy lại. Bộ gửi tin tự tạo lại khi broker quên số thứ tự (`OutOfOrderSequenceNumber`). Vòng đọc tin trên Cloud tự khởi động lại từ điểm đã xác nhận. Sự kiện trong lúc mất được gửi bù đủ. |
 | **Tắt worker làn sau** (60 s) | Làn nhanh không ảnh hưởng; tin tồn quá hạn bị bỏ khi worker lên lại. |
 | **Triton khởi động lại** | Worker tự đăng ký lại vùng nhớ dùng chung, gửi lại 1 lần. |
-| **Bộ giải mã phần cứng đứng** (252, `qtic2vdec` lỗi -5) | Đọc khung chờ tối đa 10 s, ghi log `[HwCapture] no frame...`, khởi động lại bộ giải mã tại khung đang dở. |
-| **Kiểm thử bộ giải mã treo lúc khởi động** | Dừng nhẹ (SIGINT), thử lại 1 lần sau 3 s. |
+| **Bộ giải mã phần cứng đứng** (lỗi -5) | Đọc khung chờ tối đa 10 s, ghi log `[HwCapture] no frame...`, dừng nhẹ bộ giải mã cũ (không bao giờ buộc dừng: phiên treo chỉ hết khi khởi động lại máy), mở bộ mới **từ khung khoá gần nhất** (ffmpeg chép luồng dạng MPEG-TS, không giải mã lại từ đầu file) rồi bỏ vài khung tới đúng khung đang dở; tối đa 3 lần mỗi camera. Đã kiểm trên 246 và 252: ảnh làn nhanh và ảnh lớn đều đúng khung. |
+| **Kiểm thử bộ giải mã lúc khởi động** | Kết quả lưu ở `~/.cache/v4_hw_probe.json` (lần sau không thử lại); mỗi lúc chỉ một camera thử (khoá file); tự dừng sau 30 khung kể cả khi GStreamer cũ bỏ qua `eos-after`; treo thì dừng nhẹ và thử lại 1 lần. |
+| **Đồ sót của lần chạy trước** (agent, daemon NPU, ffmpeg phát luồng chính) | `run_edge_v4.sh` dọn trước và sau mỗi lần chạy; MediaMTX được giữ lại để dùng lại. |
+| **GPU 252 lỗi bộ nhớ** (`kgsl GPU PAGE FAULT` khi đổi màu ảnh lớn bằng `qtivtransform` cũ, 4 luồng) | Ảnh lớn trên 252 đổi màu bằng CPU (`V4_HIRES_CONVERT=cpu` trong `hosts/edge-252.sh`): 4 luồng × 900 khung, không đứng (`scripts/hw_stress.py`). |
 | **Hết CMA** (246, `vb2_streamon failed, -12`) | Không tự hồi phục được: khởi động lại Edge (xem RUNBOOK). |

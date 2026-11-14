@@ -23,8 +23,9 @@ biển số, đếm và ùn tắc, đám đông, đánh nhau / ngã xe / lảng 
 | `drl/`, `benchmark/` | khung DRL và công cụ đo (dùng bởi agent / script) |
 | `legacy/adapters/` | adapter NPU/SNPE (daemon, YOLO trên NPU) mà v4 dùng lại |
 | `native/` | mã nguồn daemon SNPE |
-| `scripts/` | chạy (`run_*_v4.sh`), cấu hình Triton (`triton_config_v4.sh`), DB (`db/schema.sql`), kiểm tra và đo (`*_check.py`, `*_eval.py`), cấu hình từng Edge (`hosts/edge-*.sh`) |
-| `tests/` | ~610 test tự động (`python -m pytest tests`) |
+| `scripts/` | chạy (`run_*_v4.sh`), cấu hình Triton (`triton_config_v4.sh`), DB (`db/schema.sql`), cấu hình từng Edge (`hosts/edge-*.sh`); kiểm nội dung Edge → DB (`export_run.sh`, `verify_db_export.py`, `review_page.py`), tài nguyên (`resource_log.py`), bộ giải mã (`hw_frame_dump.py`, `hw_stress.py`), nén tensor (`compress_survey.py`, `tail_quant.py`), OCR (`plate_ocr_parity.py`) |
+| `yolo11s_contract.py` | tiền / hậu xử lý YOLO11s dùng chung (cách A trên Edge, nửa đầu B trên 247) |
+| `tests/` | ~630 test tự động: `python -m pytest tests` (cần thêm `lap`, `grpcio-tools` cho vài test ByteTrack / proto) |
 
 Không có trong repo: file model (`.onnx`, `.dlc`, `.pt`), video thử, kết quả đo — xem danh sách và vị trí trong
-[RUNBOOK](docs/RUNBOOK.md#file-model-và-dữ-liệu).
+[RUNBOOK §4](docs/RUNBOOK.md#4-file-model-và-dữ-liệu-không-có-trong-repo).

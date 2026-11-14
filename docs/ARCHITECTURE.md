@@ -6,7 +6,7 @@
 |---|---|---|---|
 | **249** | Cloud | RTX 4090, Ubuntu; Docker: Kafka (`v4-kafka`, 29092), Triton (`v4-triton`, 18000/18001/18002), TimescaleDB (`v4-tsdb`, 25432) | worker làn nhanh, làn sau, OCR, ghi DB |
 | **246** | Edge | Qualcomm RB3gen2 (QCS6490), Ubuntu 24 | NPU HTP, giải mã `v4l2h264dec`, CMA ~125 MB |
-| **252** | Edge | QCS6490 ODK, Ubuntu 20, không tản nhiệt | giải mã `qtic2vdec`, daemon NPU "v3" theo tên đồ thị, nóng nhanh (85–97 °C khi đủ tải) |
+| **252** | Edge | QCS6490 ODK, Ubuntu 20, không tản nhiệt | giải mã `qtic2vdec`, `qtivtransform` bản cũ (ảnh lớn đổi màu bằng CPU, xem §2), daemon NPU "v3" theo tên đồ thị, nóng tới ~96 °C khi 4 camera đủ tải |
 | **247** | Edge | PC Windows, RTX 5070 Ti, Git Bash | model ONNX trên GPU, giải mã OpenCV (CPU) |
 
 Mạng LAN 1 Gbit. Edge tự quyết định cho từng camera; Cloud phục vụ và báo tải ngược lại.
@@ -16,6 +16,7 @@ Mạng LAN 1 Gbit. Edge tự quyết định cho từng camera; Cloud phục v�
 ```
 Camera ─► Edge Agent (1 tiến trình / camera)
             ├─ nguồn khung: giải mã phần cứng (640x640 cho model + nhánh ảnh lớn mỗi 5 khung)
+            │     ảnh lớn đổi màu trên GPU (qtivtransform) ở 246, trên CPU (videoconvert) ở 252
             ├─ luồng chính → MediaMTX trên Edge (RTSP/WebRTC cho web)
             ├─ LÀN NHANH: 1 trong 5 cách (bảng dưới) → box + mã bám
             │     └─ kết quả → Kafka → DB (frames, detections)
@@ -35,7 +36,7 @@ Cloud 249 ◄──────────────── Kafka ◄───
 |---|---|---|---|---|
 | **N** | YOLOv8n 320 | Edge (NPU / GPU 247) | chỉ kết quả (cho DB) | Edge |
 | **A** | YOLO11s 320 | Edge (NPU / GPU 247) | chỉ kết quả | Edge |
-| **B** | RT-DETRv2-S **chia đôi** sau layer2 | nửa đầu Edge (NPU W8A8 / ONNX 247), nửa sau Cloud | tensor uint8 + zstd (~450 KB) | Cloud |
+| **B** | RT-DETRv2-S **chia đôi** sau layer2 | nửa đầu Edge (NPU W8A8 / ONNX 247), nửa sau Cloud | tensor **2 bit theo kênh** + zstd (~90 KB; `V4_CUT_BITS=8`: uint8 ~450 KB) | Cloud |
 | **C** | RT-DETRv2-S đầy đủ | Cloud (Triton) | JPEG | Cloud |
 | **D** | D-FINE-X đầy đủ | Cloud (Triton) | JPEG | Cloud |
 
@@ -43,6 +44,9 @@ Cloud 249 ◄──────────────── Kafka ◄───
 - Mỗi camera tối đa 2 khung đang chờ Cloud; quá hạn thì bỏ (Edge không chờ).
 - Kết quả của Cloud về hộp riêng của từng Edge (`<topic>.<node_id>`).
 - Không chia D-FINE-X: không có điểm cắt vừa giao nhiều việc cho Edge vừa gửi ít dữ liệu (8 % việc hoặc 1,55 MB/khung).
+- Gói tensor B (`contracts/cut_tensor.py`): `CUT2` = 2 bit mỗi giá trị, min/max riêng từng kênh, F1 0,839 so với
+  0,8445 của uint8 trên UA-DETRAC (`scripts/compress_survey.py`, 40 cách nén không cần huấn luyện); Cloud vẫn đọc gói
+  `CUT1` (uint8) cũ.
 
 ## 4. Làn sau
 
@@ -70,8 +74,9 @@ Edge chỉ chạy **luật** trên box + mã bám (riêng UC1 chạy thêm model
 |---|---|---|
 | `rtdetr_full` | C | 2 bản, **TensorRT FP32**, lô ≤ 4, chờ gom ≤ 8 ms |
 | `dfinex_full` | D | 2 bản, **TensorRT FP32**, lô ≤ 4 |
-| `rtdetr_tail_u8` | B | 2 bản, ONNX Runtime FP32 |
-| `crowd_density` | UC3 | lô 1, ưu tiên thấp |
+| `rtdetr_tail_q` | B | 2 bản, ONNX Runtime FP32; nhận mã lượng tử + min/bước theo kênh, giải lượng tử trên GPU (`scripts/tail_quant.py`, box giống hệt nửa sau số thực) |
+| `rtdetr_tail_u8`, `rtdetr_tail` | (dự phòng) | nửa sau cũ (uint8 / số thực), không còn dùng |
+| `crowd_density` | UC3 | lô 1 (không gom: ảnh 1280 chiếm trọn GPU), **TensorRT FP32**, ưu tiên thấp |
 | `pose_rtmo_s` | UC4 | lô ≤ 4, ưu tiên thấp |
 | `action_stgcnpp` | UC4 | lô ≤ 8, ưu tiên thấp |
 | `plate_ocr` | UC1 | lô ≤ 64 dòng chữ, chờ gom ≤ 2 ms, ưu tiên thấp; dòng cùng bề rộng (bội số 64) của mọi camera chạy chung |
@@ -79,7 +84,8 @@ Edge chỉ chạy **luật** trên box + mã bám (riêng UC1 chạy thêm model
 - Bộ giới hạn GPU 6 suất: làn nhanh 1 suất/lần chạy (ưu tiên 1); model làn sau chiếm cả 6 suất (chỉ chạy khi GPU rảnh làn nhanh).
 - Hàng đợi làn nhanh tối đa 64 yêu cầu, chờ tối đa 1 s rồi từ chối (không phục vụ muộn).
 - TensorRT FP16 nhanh hơn 2–3 lần nhưng lệch box (khớp 0,89–0,95 < 0,99) → không dùng; FP32 khớp 1,000.
-- Worker dùng bộ nhớ dùng chung với Triton; tự đăng ký lại khi Triton khởi động lại.
+- Worker dùng bộ nhớ dùng chung với Triton: một vùng cho mỗi luồng và mỗi đầu vào, lớn dần khi cần (14/11 sửa rò:
+  trước đó 1255 vùng / 16 GB); tự đăng ký lại khi Triton khởi động lại. `plate_ocr` gửi thẳng trong yêu cầu.
 
 ## 6. Kafka
 
