@@ -14,6 +14,7 @@ from contracts import FrameIdentity
 from edge_agent import CapturedFrame
 
 SEEK_LATE_FRAMES = 30   # 2 s at 15 fps: later than this, seek instead of decoding each late frame
+SEEK_MIN_GAP_S = 5.0    # at most one seek per 5 s: a seek slower than the lateness it fixes must not repeat forever
 
 
 class OpenCVFrameSource:
@@ -46,6 +47,7 @@ class OpenCVFrameSource:
         self.loop = loop
         self.loops_completed = 0
         self.frames_skipped = 0   # realtime file: frames dropped to stay on the clock, like a live camera
+        self.seeks = 0            # of which jumps (seeks) instead of reading
         # 12/11: frame 0's time = when the main stream started (set by the agent from its CopyPublisher), not when this
         # source finished opening its decoder: on 252 that took seconds and the video stayed ~3.5 s ahead of the boxes.
         self.clock_origin_mono_ns = None
@@ -86,6 +88,7 @@ class OpenCVFrameSource:
             started_mono_ns = self.clock_origin_mono_ns or monotonic_ns()
             last_pts = -1
             frame_id = 0
+            seek_cost_s, last_seek_ns = 0.0, None   # duration of the last seek; when it started
 
             def read_next(index):
                 ok, pixels = cap.read()
@@ -140,14 +143,23 @@ class OpenCVFrameSource:
                         late = int(-delay_ns // period_ns) - 1
                         # 14/11: more than 2 s late -> jump (seek) instead of decoding every late frame: on 252 the
                         # decoders burnt 4.3 cores catching up. The file position is the frame in the file (loops wrap).
+                        # The jump also covers its own duration (a hardware decoder restart took ~10 s on a loaded 252,
+                        # which left the camera 10 s late again and seeking forever at ~0.1 fps), and runs at most
+                        # once per SEEK_MIN_GAP_S; in between, late frames are read and dropped as before.
                         pos = await asyncio.to_thread(cap.get, cv2.CAP_PROP_POS_FRAMES)
                         total = await asyncio.to_thread(cap.get, cv2.CAP_PROP_FRAME_COUNT)
-                        if late >= SEEK_LATE_FRAMES and 0 <= pos + late < (total or 0) and (
-                                self.max_frames is None or frame_id + late < self.max_frames):
-                            if await asyncio.to_thread(cap.set, cv2.CAP_PROP_POS_FRAMES, pos + late) and \
-                                    await asyncio.to_thread(cap.get, cv2.CAP_PROP_POS_FRAMES) == pos + late:
-                                frame_id += late
-                                self.frames_skipped += late
+                        jump = late + math.ceil(seek_cost_s * source_fps)
+                        if late >= SEEK_LATE_FRAMES and 0 <= pos + jump < (total or 0) and (
+                                self.max_frames is None or frame_id + jump < self.max_frames) and (
+                                last_seek_ns is None or monotonic_ns() - last_seek_ns > SEEK_MIN_GAP_S * 1e9):
+                            last_seek_ns = monotonic_ns()
+                            landed = (await asyncio.to_thread(cap.set, cv2.CAP_PROP_POS_FRAMES, pos + jump)
+                                      and await asyncio.to_thread(cap.get, cv2.CAP_PROP_POS_FRAMES) == pos + jump)
+                            seek_cost_s = (monotonic_ns() - last_seek_ns) / 1e9
+                            self.seeks += 1
+                            if landed:
+                                frame_id += jump
+                                self.frames_skipped += jump
                                 late = 0
                         for _ in range(late):
                             if self.max_frames is not None and frame_id + 1 >= self.max_frames:

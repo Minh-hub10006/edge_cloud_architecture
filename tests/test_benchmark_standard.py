@@ -138,6 +138,49 @@ class LateJumpSourceTests(unittest.TestCase):
             self.assertLessEqual(abs(frame_id - value), 2, (frame_id, value))   # number == picture (MJPG rounding)
 
 
+class SlowSeekSourceTests(unittest.TestCase):
+    def test_a_seek_slower_than_the_lateness_it_fixes_does_not_repeat_forever(self):
+        # 14/11 on 252: a decoder restart (seek) took ~10 s, the camera was 10 s late again, seeked again... ~0.1 fps
+        cv2 = __import__("cv2")
+        import time
+        import numpy as np
+        from unittest import mock
+        from media.opencv_source import OpenCVFrameSource
+        real = cv2.VideoCapture
+
+        class SlowSeek:
+            def __init__(self, path):
+                self.cap = real(path)
+
+            def set(self, prop, value):
+                time.sleep(0.9)   # 45 frames at 50 fps: more than SEEK_LATE_FRAMES
+                return self.cap.set(prop, value)
+
+            def __getattr__(self, name):
+                return getattr(self.cap, name)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "clip.avi")
+            writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"MJPG"), 50, (64, 48))
+            for i in range(600):
+                writer.write(np.full((48, 64, 3), i % 250, np.uint8))
+            writer.release()
+
+            async def read():
+                source = OpenCVFrameSource(path, node_id="n", camera_id="c", stream_id="s", max_frames=600)
+                seen = []
+                async for frame in source:
+                    seen.append((frame.identity.source_frame_id, int(frame.pixels.mean().round())))
+                    if len(seen) == 5:
+                        await asyncio.sleep(1.5)
+                return source, seen
+            with mock.patch.object(cv2, "VideoCapture", SlowSeek):
+                source, seen = asyncio.run(read())
+        self.assertLessEqual(source.seeks, 2)
+        self.assertGreater(len(seen), 300)                    # frames keep coming after the stall
+        for frame_id, value in seen:
+            self.assertLessEqual(abs(frame_id % 250 - value), 2, (frame_id, value))
+
+
 class ClockOriginSourceTests(unittest.TestCase):
     def test_frame_numbers_follow_the_main_streams_clock_not_the_sources_opening(self):
         # 12/11 on 252: the main stream started seconds before the source had opened its decoder; the video stayed
