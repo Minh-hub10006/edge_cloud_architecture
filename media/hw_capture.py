@@ -83,6 +83,21 @@ def stop_gracefully(proc, timeout_s: float = 5.0, force: bool = True) -> bool:
         return False
 
 
+_SEEK_CONTAINER = None
+
+
+def seek_container() -> tuple[str, str]:
+    """(ffmpeg format, GStreamer demuxer) for the seek feed: MPEG-TS (exact timestamps) when tsdemux exists."""
+    global _SEEK_CONTAINER
+    if _SEEK_CONTAINER is None:
+        found = subprocess.run(["gst-inspect-1.0", "tsdemux"], env=SYSTEM_ENV, capture_output=True).returncode == 0
+        _SEEK_CONTAINER = ("mpegts", "tsdemux") if found else ("matroska", "matroskademux")
+        if not found:
+            print("[HwCapture] no tsdemux: seeks feed Matroska (ms timestamps: full frames may be one frame off)",
+                  flush=True)
+    return _SEEK_CONTAINER
+
+
 def parse_keyframes(ffprobe_csv: str) -> list[tuple[int, float]]:
     """ffprobe packet=pts_time,flags CSV -> [(display index, pts s)] of the keyframes."""
     pkts = []
@@ -267,13 +282,14 @@ class HwCapture:
         if seek_frame > 0:
             start, pts = self.keyframe_before(seek_frame)
         if start > 0:
+            container, demux = seek_container()
             self._feeder = subprocess.Popen(
                 ["ffmpeg", "-v", "error", "-ss", f"{pts + .5 / self.fps:.6f}", "-i", self.source, "-map", "0:v:0",
-                 "-c:v", "copy", "-f", "matroska", "-"],   # +half a frame: never the keyframe before
-                # Matroska, not raw H.264 (14/11): raw frames carry no timestamps, so the full-resolution branch's
-                # videorate kept other frames than 0, 5, 10... after a seek (picture difference 12.8 instead of ~1)
+                 "-c:v", "copy", "-f", container, "-"],   # +half a frame: never the keyframe before
+                # 14/11: raw H.264 has no timestamps and Matroska rounds them to ms (333 ms < 1/3 s), so the
+                # full-resolution branch's videorate kept frame 6 instead of 5 after a seek; MPEG-TS ticks 1/90000 s
                 env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            head = ["fdsrc", "fd=0", "!", "matroskademux", "!", *self.head[self.head.index("h264parse"):]]
+            head = ["fdsrc", "fd=0", "!", demux, "!", *self.head[self.head.index("h264parse"):]]
             chain = head + self.chain[len(self.head):]
         # Frames go through their own pipe, never stdout: 13/11 on 252 qtic2vdec's library printed 64 KiB of log lines
         # ("QC2TargetSpec: Video Core Features...") to stdout ahead of the frames; every picture the model got was moved
