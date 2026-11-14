@@ -403,5 +403,8 @@ class HwCapture:
         return True
 
     def release(self) -> None:
+        # never forced (14/11: 3 decoders on 252 were terminated at the end of a run -> ghost sessions until a reboot);
+        # one still running after 15 s gets SIGINT again when this process exits, and ends at the file's end anyway
         proc, self._proc = self._proc, None
-        stop_gracefully(proc)
+        if not stop_gracefully(proc, timeout_s=15, force=False):
+            print("[HwCapture] decoder did not stop in 15 s after SIGINT: left to finish by itself", flush=True)
