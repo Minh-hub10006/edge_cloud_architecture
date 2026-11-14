@@ -164,6 +164,6 @@ class ProbeStopTests(unittest.TestCase):
         cap.decoder = "v4l2h264dec"
         with mock.patch("media.hw_capture.subprocess.Popen", Hung), mock.patch("time.sleep"):
             with self.assertRaisesRegex(RuntimeError, "hung.*after one retry"):
-                cap._probe(["filesrc"])
+                cap._probe_retrying(["filesrc"])
         # each try ended after SIGINT: never SIGKILL (ghost sessions); 12/11 one retry after a hang
         self.assertEqual(sent, [signal.SIGINT, signal.SIGINT])

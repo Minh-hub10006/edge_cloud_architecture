@@ -29,6 +29,7 @@ import numpy as np
 # ~110 s to the end, with no error; read() waited forever and the agent was killed at its run timeout. A read now waits
 # at most STALL_S, logs what the pipeline said, and restarts the decoder at the frame it was on.
 STALL_S = float(os.getenv("V4_CAPTURE_STALL_S", "10"))
+PROBE_CACHE = os.path.expanduser(os.getenv("V4_HW_PROBE_CACHE", "~/.cache/v4_hw_probe.json"))
 SYSTEM_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": os.environ.get("HOME", "/tmp"), "GST_DEBUG": "1"}
 CAP_PROP_POS_MSEC, CAP_PROP_POS_FRAMES, CAP_PROP_FPS = 0, 1, 5  # cv2 property ids
 
@@ -211,6 +212,32 @@ class HwCapture:
         self._start()
 
     def _probe(self, chain) -> str:
+        """The probe's log, from the cache when this decoder + transform + video size was probed before.
+        14/11: 4 agents probing at once on 246 -> one probe hung 60 s and its camera started ~93 s late (252: all ~110 s).
+        Buffer sizes depend only on the decoder, the transform chain and the frame size, so a probe's log is kept in
+        ~/.cache/v4_hw_probe.json (delete it after a system update); probes of different agents run one at a time."""
+        key = "|".join([self.decoder, self.io_mode, f"{self.width}x{self.height}", *chain[len(self.head):]])
+        os.makedirs(os.path.dirname(PROBE_CACHE), exist_ok=True)
+        import json
+        with open(PROBE_CACHE + ".lock", "w") as lock:
+            try:
+                import fcntl
+                fcntl.flock(lock, fcntl.LOCK_EX)   # released when the file closes
+            except ImportError:   # Windows (tests only: 247 decodes with OpenCV)
+                pass
+            try:
+                cache = json.load(open(PROBE_CACHE))
+            except (OSError, ValueError):
+                cache = {}
+            if key not in cache:
+                cache[key] = self._probe_retrying(chain)
+                tmp = PROBE_CACHE + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(cache, f)
+                os.replace(tmp, PROBE_CACHE)
+            return cache[key]
+
+    def _probe_retrying(self, chain) -> str:
         """One retry after a hang or a failure (12/11 on 246/252, agents opening decoders at once: a probe hung 60 s, or
         failed with "Device or resource busy" / "poll error", and its camera never started). Out of memory (ENOMEM, -12)
         is not retried: only a reboot of the Edge frees it."""

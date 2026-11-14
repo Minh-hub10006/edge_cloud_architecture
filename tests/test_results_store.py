@@ -203,19 +203,19 @@ class HwCaptureTests(unittest.TestCase):
         hung = TimeoutError("hardware decoder probe hung for 60 s")
         with mock.patch("time.sleep"):
             with mock.patch.object(cap, "_probe_once", side_effect=[hung, "log"]) as once:
-                self.assertEqual(cap._probe(["chain"]), "log")
+                self.assertEqual(cap._probe_retrying(["chain"]), "log")
             self.assertEqual(once.call_count, 2)
             with mock.patch.object(cap, "_probe_once", side_effect=[hung, hung]):
                 with self.assertRaisesRegex(RuntimeError, "after one retry"):
-                    cap._probe(["chain"])
+                    cap._probe_retrying(["chain"])
             busy = RuntimeError("probe failed (exit 1): Device or resource busy. Check the device (an ENOMEM ...)")
             with mock.patch.object(cap, "_probe_once", side_effect=[busy, "log"]) as once:   # 12/11 on 246 and 252
-                self.assertEqual(cap._probe(["chain"]), "log")
+                self.assertEqual(cap._probe_retrying(["chain"]), "log")
             self.assertEqual(once.call_count, 2)
             oom = RuntimeError("probe failed (exit 1): vb2_streamon failed, -12. Check the device (an ENOMEM ...)")
             with mock.patch.object(cap, "_probe_once", side_effect=oom) as once:
                 with self.assertRaises(RuntimeError):
-                    cap._probe(["chain"])
+                    cap._probe_retrying(["chain"])
             self.assertEqual(once.call_count, 1)   # out of memory: only a reboot helps
 
     def test_restart_at_a_frame_skips_whole_frames_even_when_the_pipe_gives_small_pieces(self):
@@ -384,3 +384,25 @@ class KeyframeTests(unittest.TestCase):
         from media.hw_capture import parse_keyframes
         csv = "0.000000,K__\n0.066667,___\n0.133333,___\n2.000000,K__\n0.200000,___\nbad line\n2.066667,___\n"
         self.assertEqual(parse_keyframes(csv), [(0, 0.0), (4, 2.0)])   # sorted by time: the 2 s keyframe is frame 4
+
+
+class ProbeCacheTests(unittest.TestCase):
+    def test_a_probe_runs_once_per_decoder_chain_and_size_then_comes_from_the_cache(self):
+        import tempfile
+        from unittest import mock
+        from media import hw_capture
+        from media.hw_capture import HwCapture
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(hw_capture, "PROBE_CACHE", tmp + "/p.json"):
+            calls = []
+
+            def make(width):
+                cap = HwCapture.__new__(HwCapture)
+                cap.decoder, cap.io_mode, cap.width, cap.height, cap.head = "qtic2vdec", "", width, 1920, ["src"]
+                cap._probe_retrying = lambda chain: calls.append(chain) or f"log {chain[-1]} {width}"
+                return cap
+            a = make(1080)
+            self.assertEqual(a._probe(["src", "!", "640"]), "log 640 1080")
+            self.assertEqual(make(1080)._probe(["src", "!", "640"]), "log 640 1080")   # another agent: cached
+            make(1080)._probe(["src", "!", "1080x1920"])                              # other chain: probed
+            make(720)._probe(["src", "!", "640"])                                     # other video size: probed
+            self.assertEqual(len(calls), 3)
