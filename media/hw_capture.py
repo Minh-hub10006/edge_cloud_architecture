@@ -200,7 +200,13 @@ class HwCapture:
         if size:
             self.stride, self.frame_bytes = 0, buffer_size(log, size * size * 3, "qtivtransform")
             if self.hires_every:
-                self.hires_chain = transform_chain(self.width, height=self.height)
+                # V4_HIRES_CONVERT=cpu (252): videoconvert instead of qtivtransform for the full-size frames. 14/11 on 252
+                # (old qtivtransform): 4 streams with the full-size GPU branch -> 59 "kgsl GPU PAGE FAULT" in 60 s and
+                # every decoder failed (-5); without that branch 4 x 900 frames, 0 faults (scripts/hw_stress.py).
+                # Only every hires_every-th frame reaches it; OCR reads grey, so BT.709 vs BT.601 colour does not matter.
+                self.hires_chain = (["!", "videoconvert", "!", f"video/x-raw,format=BGR,width={self.width},height={self.height}"]
+                                    if os.getenv("V4_HIRES_CONVERT", "gpu") == "cpu"
+                                    else transform_chain(self.width, height=self.height))
                 self.hires_bytes = buffer_size(self._probe(self.head + self.hires_chain), self.width * self.height * 3,
                                                "full-resolution qtivtransform")
         else:

@@ -30,3 +30,6 @@ EDGE_MEDIAMTX_BIN=$EDGE_HOME/edge_artifacts/mediamtx/mediamtx  # v50 (run_test.s
 # and the strict v3 daemon with the DLC's graph name (snpe-dlc-info: plate_320_split_fp32, outputs boxes,scores).
 PLATE_DLC=$EDGE_HOME/plate_ocr_home/edge/plate_yolov8n_320_int8_split_qcs6490.dlc
 PLATE_SNPE_GRAPH=plate_320_split_fp32
+# 14/11: full-size frames (slow lane) converted on the CPU: 252's old qtivtransform faults the GPU with 4 streams
+# (media/hw_capture.py, scripts/hw_stress.py). Exported: the camera agents read it.
+export V4_HIRES_CONVERT=cpu
