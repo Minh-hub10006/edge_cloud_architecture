@@ -18,7 +18,7 @@ tar -xzf ~/edge_v4_code_<ngày>.tgz -C ~          # trên từng máy
 ```bash
 cd ~/edge_video_platform_v4
 bash scripts/run_results_v4.sh db                 # lần đầu: tạo mật khẩu (~/.v4_db.env, mode 600), DB, schema
-bash scripts/triton_config_v4.sh trt "dfinex_full rtdetr_full crowd_density"   # Triton + TensorRT FP32 (biên dịch 5-15 phút lần đầu)
+bash scripts/triton_config_v4.sh trt "dfinex_full rtdetr_full crowd_density rtdetr_tail_q"   # Triton + TensorRT FP32 (biên dịch 5-15 phút lần đầu)
 RTDETR_SPLIT_HEAD_ID=rtl2-w8a8pc,rtl2-onnx-fp32 bash scripts/run_cloud_v4.sh start 4   # 4 worker làn nhanh
 bash scripts/run_slow_v4.sh start                 # worker làn sau (UC3, UC4)
 bash scripts/run_plate_v4.sh start                # OCR biển số: 16 luồng, Triton plate_ocr gom lô (PLATE_OCR_BACKEND=easyocr: cách cũ)
@@ -131,7 +131,7 @@ Giờ trong DB là UTC.
 
 - 252 chạy đủ 4 camera × 8 việc nhưng nóng tới ~96 °C (không tản nhiệt; cách B ~85 %, D ~89 % khung); cần tản nhiệt
   cho chạy dài; 5 camera chưa thử lại sau các bản sửa.
-- `rtdetr_tail_q` (cách B) chạy ONNX Runtime, chưa TensorRT.
+- `rtdetr_tail_q` (cách B) chạy TensorRT FP32 từ 15/11 (trước đó ONNX Runtime, chậm hơn cả model đầy đủ).
 - Cách B nén 2 bit (~90 KB) vẫn lớn hơn JPEG của C (~76 KB); xuống thấp hơn cần huấn luyện lớp nén.
 - ST-GCN++ dùng trọng số NTU60, chưa huấn luyện lại; ngưỡng đánh nhau 0,3 tạm.
 - DRL chưa cắm vào v4.

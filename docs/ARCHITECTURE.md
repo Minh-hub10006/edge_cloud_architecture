@@ -74,7 +74,7 @@ Edge chỉ chạy **luật** trên box + mã bám (riêng UC1 chạy thêm model
 |---|---|---|
 | `rtdetr_full` | C | 2 bản, **TensorRT FP32**, lô ≤ 4, chờ gom ≤ 8 ms |
 | `dfinex_full` | D | 2 bản, **TensorRT FP32**, lô ≤ 4 |
-| `rtdetr_tail_q` | B | 2 bản, ONNX Runtime FP32; nhận mã lượng tử + min/bước theo kênh, giải lượng tử trên GPU (`scripts/tail_quant.py`, box giống hệt nửa sau số thực) |
+| `rtdetr_tail_q` | B | 2 bản, **TensorRT FP32** (15/11; box khớp 1,000, 6,5 ms/lô so với 10,6 ms trên ONNX Runtime); nhận mã lượng tử + min/bước theo kênh, giải lượng tử trên GPU (`scripts/tail_quant.py`, box giống hệt nửa sau số thực) |
 | `rtdetr_tail_u8`, `rtdetr_tail` | (dự phòng) | nửa sau cũ (uint8 / số thực), không còn dùng |
 | `crowd_density` | UC3 | lô 1 (không gom: ảnh 1280 chiếm trọn GPU), **TensorRT FP32**, ưu tiên thấp |
 | `pose_rtmo_s` | UC4 | lô ≤ 4, ưu tiên thấp |
