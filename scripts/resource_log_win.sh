@@ -26,5 +26,6 @@ typeperf -si 1 -sc "$secs" -f CSV -y -o "$(cygpath -w "$out/${tag}_sys_$stamp.cs
   '\Process(ffmpeg*)\% Processor Time' '\Process(mediamtx*)\% Processor Time' > /dev/null &
 tp=$!
 wait "$tp" || true   # returns at once when the trap fires
-kill "$gpu" 2>/dev/null || true
+# 15/11 on 247: kill of the Git Bash pid left nvidia-smi running; stop the Windows process itself
+taskkill //F //PID "$(cat "/proc/$gpu/winpid" 2>/dev/null)" > /dev/null 2>&1 || kill "$gpu" 2>/dev/null || true
 ls -la "$out/${tag}_"*"_$stamp.csv"

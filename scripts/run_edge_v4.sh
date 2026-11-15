@@ -81,7 +81,9 @@ clean_leftovers "before"
 
 # 3. local MediaMTX for the main streams
 if ! (exec 3<>/dev/tcp/127.0.0.1/8554) 2>/dev/null; then
-  (cd "$here" && MTX_WEBRTCADDITIONALHOSTS="$EDGE_IP" nohup "$EDGE_MEDIAMTX_BIN" media/mediamtx.yml > "$out/mediamtx.log" 2>&1 &)
+  # 15/11 on 247: the redirect must cover the backgrounded "cd && nohup" subshell too - in Git Bash that subshell lives
+  # as long as MediaMTX and held the caller's stdout, so "run_edge_v4.sh | tee" (scenario.sh) never ended
+  ( (cd "$here" && MTX_WEBRTCADDITIONALHOSTS="$EDGE_IP" exec nohup "$EDGE_MEDIAMTX_BIN" media/mediamtx.yml)       > "$out/mediamtx.log" 2>&1 < /dev/null & )
   sleep 2
 fi
 
