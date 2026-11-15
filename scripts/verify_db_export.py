@@ -18,7 +18,7 @@ Checks (gate in brackets), per camera:
     objects     stored vehicle / person boxes on an object of an independent detector (YOLO11m)   [>= 50 %]
     classes     ... of those, the same class group (person-bicycle-motorcycle, car-bus-truck)       [>= 85 %]
     tracks      a track's box in its next frame (<= 3 frames later) overlaps it (IoU >= 0.3)       [>= 95 %]
-  counts      windows <= 7.5 s apart; per-class means rebuilt from detections in the same window    [>= 90 % within
+  counts      a window closes at the first result past its length; per-class means rebuilt from detections in the same window    [>= 90 % within
               max(0.5, 10 %)]
   events      known type; end >= start; snapshot present and a picture of that camera's video      [100 %]
   plates      crop inside its vehicle's box on its frame [>= 90 %]; valid flag = plate format [100 %]; its track
@@ -29,6 +29,7 @@ Checks (gate in brackets), per camera:
 Writes <dir>/verify_result.json (every check with value, gate and verdict) and prints ALL PASS / SOME FAIL.
 """
 import argparse
+import bisect
 import collections
 import csv
 import json
@@ -238,8 +239,16 @@ def main():
     for cam, ws in sorted(cnt.items()):
         ws.sort(key=lambda r: float(r["end_ms"]))
         ends = [float(r["end_ms"]) for r in ws]
-        rep.share(cam, "count gap", sum(b - a_ <= 7500 for a_, b in zip(ends, ends[1:])), max(1, len(ends) - 1), 1.0)
         caps = sorted((float(r["cap_ms"]), int(r["frame_id"])) for r in frm.get(cam, []))
+        # 15/11: a window closes at the first result past its length; with no result for seconds (overload) it is
+        # longer and that is right. Late = a stored frame came after the window's length but it still did not close.
+        times, late, longest = [t for t, _ in caps], 0, 0.0
+        for a_, b in zip(ends, ends[1:]):
+            longest = max(longest, b - a_)
+            limit = a_ + float(ws[0]["window_s"]) * 1000 + 500
+            late += any(limit < t < b - 1 for t in times[bisect.bisect_right(times, limit):][:1])
+        rep.share(cam, "count gap", max(1, len(ends) - 1) - late, max(1, len(ends) - 1), 1.0,
+                  f"longest window {longest / 1000:.1f} s")
         good = checked = 0
         worst = ""
         for prev, r in zip(ws, ws[1:]):
