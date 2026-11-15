@@ -27,11 +27,12 @@ export V4_HW_SIZE V4_SLOW_TASKS ${V4_DECODER:+V4_DECODER}
 [[ "$host" == 247 ]] && unset V4_HW_SIZE   # OpenCV decode on 247: no hardware resize
 res_secs=60
 if [[ -n "$m" ]]; then
-  res_secs=$(( secs + 120 ))   # the run also primes and shuts down around SECONDS
-  [[ -n "$start_at" ]] && res_secs=$(( res_secs + $(date -d "$start_at" +%s) - $(date +%s) ))
+  res_secs=$(( secs + 300 ))   # upper bound only: stopped when the run ends
+  # 247's logger starts only once the agents run (at START_AT): only the Linux loggers must also cover the wait
+  [[ -n "$start_at" && "$host" != 247 ]] && res_secs=$(( res_secs + $(date -d "$start_at" +%s) - $(date +%s) ))
 fi
 if [[ "$host" == 247 ]]; then
-  bash "$here/scripts/resource_log_win.sh" "$res_secs" "$out" "${m:+4}" & res=$!
+  bash "$here/scripts/resource_log_win.sh" "$res_secs" "$out" "${m:+8}" & res=$!
 else
   python3 -B "$here/scripts/resource_log.py" --role edge --seconds "$res_secs" --out "$out" & res=$!
 fi
@@ -40,6 +41,7 @@ if [[ -n "$m" ]]; then
   spec="${v[0]}:$a ${v[1]}:$b ${v[2]}:$c ${v[3]}:$d"
   echo "== $code on $host: $spec, $secs s, results and resources in $out"
   bash "$here/scripts/run_edge_v4.sh" "$host" "$spec" "$secs" "$start_at" 2>&1 | tee "$out/run_$host.log"
+  sleep 5; kill -TERM "$res" 2>/dev/null   # 15/11: stop the logger when the cameras end, not after a fixed time
 fi
 wait "$res"
 echo "== $code on $host done: $(ls "$out" | tr '\n' ' ')"

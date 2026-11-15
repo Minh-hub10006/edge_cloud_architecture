@@ -1,4 +1,5 @@
-"""Resources of one run, once per second (14/11). Read only; stops by itself after --seconds.
+"""Resources of one run, once per second (14/11). Read only; stops by itself after --seconds, or earlier on SIGTERM /
+Ctrl+C (15/11: scripts/scenario.sh stops it when the cameras end) - the summary and the Triton table still print.
 
   python3 -B scripts/resource_log.py --role cloud --seconds 260 --out ~/v4_res     # 249
   python3 -B scripts/resource_log.py --role edge  --seconds 260 --out ~/v4_res     # 246 / 252 (Linux)
@@ -16,6 +17,7 @@ import argparse
 import csv
 import os
 import re
+import signal
 import socket
 import subprocess
 import time
@@ -126,11 +128,13 @@ def main():
     cols = (["t_s", "cpu_pct", "ram_mb", "cma_free_mb", "net_in_mbit", "net_out_mbit", "temp_c"]
             + [f"{g}_cores" for g in groups] + [f"{g}_mb" for g in groups]
             + (["gpu_pct", "gpu_mem_mb", "gpu_w", "gpu_c"] if a.role == "cloud" else []))
-    rows = []
+    rows, stop = [], []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.append(sig))
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(cols)
-        while time.monotonic() - t0 < a.seconds:
+        while not stop and time.monotonic() - t0 < a.seconds:
             time.sleep(max(0.0, 1 - (time.monotonic() - prev[3])))
             cur = (cpu_total(), net_bytes(), procs(groups), time.monotonic())
             dt = cur[3] - prev[3]
