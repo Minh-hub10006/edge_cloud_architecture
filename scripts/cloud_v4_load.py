@@ -8,6 +8,10 @@ rtdetr/dfinex = JPEG q85 640 (edge_agent encode_cloud_jpeg), split = the cut ten
 --bits 2 = CUT2 as live since 14/11, 8 = CUT1). --fps 15 (15/11) paces each camera like a real one: a frame whose
 slot passed while waiting is skipped (as the Edge does); --fps 0 = as fast as replies come (closed loop).
 Reports frames/s, per-camera frames/s and share of slots served, reply latency p50/p95, rejected replies.
+Results come back on the per-node topic cloud.detection-result.v1.load (15/11), which must exist (Kafka on 249 does not
+auto-create topics; run_cloud_v4.sh only creates the Edges' ones):
+  docker exec v4-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --create --if-not-exists     --topic cloud.detection-result.v1.load --partitions 1 --config retention.ms=60000 --config max.message.bytes=2097152
+Its results also reach the database as node_id 'load' (the writer reads the shared topic).
 """
 import argparse
 import asyncio
@@ -42,6 +46,7 @@ def cpu_busy():
     return 1 - (idle - prev[0]) / max(total - prev[1], 1)
 
 
+NODE = "load"
 MODEL_IDS = {"rtdetr": "rtdetrv2_s_candidate_6b5b2ca4fb32", "dfinex": "dfine_x_candidate_9461641566be",
              "split": "rtdetrv2_r18vd_sp2_120e_coco+layer2_split"}
 
@@ -51,7 +56,8 @@ async def run(a, payloads, cams):
     from contracts.errors import CloudInferenceRejected
     from contracts.kafka_transport import KafkaCloudClient
     mode = {"rtdetr": ModelMode.RTDETR_CLOUD, "dfinex": ModelMode.DFINEX_CLOUD, "split": ModelMode.RTDETR_SPLIT_CLOUD}[a.mode]
-    client = KafkaCloudClient(a.bootstrap, node_id=f"load-{uuid4().hex[:6]}", max_pending=256)
+    # 15/11: the same node id as the tickets' frames - the Cloud answers on cloud.detection-result.v1.<frame node id>
+    client = KafkaCloudClient(a.bootstrap, node_id=NODE, max_pending=256)
     await client.start()
     await asyncio.sleep(2)
     lat, rejected, detail, inside = [], {}, {}, []
@@ -68,7 +74,7 @@ async def run(a, payloads, cams):
                 else:
                     i = max(i, int((time.perf_counter() - start) * a.fps))   # skip the slots already missed
             now = time.time_ns()
-            frame = FrameIdentity(node_id="load", camera_id=f"cam{k}", stream_id="s", stream_epoch=epoch,
+            frame = FrameIdentity(node_id=NODE, camera_id=f"cam{k}", stream_id="s", stream_epoch=epoch,
                                   source_frame_id=i, capture_utc_ns=now, source_pts=i * 66_666_667)
             body = payloads[(k + i) % len(payloads)]
             ticket = CloudInferenceTicket(frame=frame, model_mode=mode, model_id=MODEL_IDS[a.mode], decision_id="load/v4",
@@ -113,6 +119,8 @@ async def run(a, payloads, cams):
               flush=True)
     for status, text in detail.items():
         print(f"      first {status}: {text}", flush=True)
+    if not len(r):   # 15/11: a run with no reply at all measured nothing - stop instead of printing more levels
+        raise SystemExit("no replies: does topic cloud.detection-result.v1.load exist and are the v4 workers running?")
 
 
 def main():
