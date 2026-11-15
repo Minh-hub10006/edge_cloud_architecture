@@ -106,24 +106,26 @@ class CrowdTriggerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((sent[0][1]["width"], sent[0][1]["height"]), (360, 640))
         self.assertEqual(stats["sent_low_res"], 1)
 
-    async def test_a_dense_frame_without_its_own_full_copy_uses_the_newest_one_in_the_ring(self):
-        # 10/11 on 246: full resolution on every 5th frame; frames 3-4 after one fell back to 640 (-6..-16 people)
+    async def test_a_dense_frame_without_its_own_full_copy_waits_for_the_next_one_that_has_it(self):
+        # 15/11: sending the ring's older full copy stored persons_boxes of another frame (8 boxes vs 3 on frame_id)
         from edge_agent.fanout import BoundedLatestQueue
         from edge_agent.slow_lane import FrameRing
         sent = []
         task = self.task(sent)
-        crowd = lambda t: [person(i, .02 * i) for i in range(35)]
-        evs = events(2, crowd)
+        evs = events(2, lambda t: [person(i, .015 * i) for i in range(30 + round(t * 15))])  # count differs per frame
         ring = FrameRing()
-        for k, e in enumerate(evs[:3]):   # frame 0 has its full copy; frame 2 (0.67 s later, the dense one) does not
-            e.frame.hires = e.frame.hires if k == 0 else None
-            ring.add(e.frame)
         q, stop = BoundedLatestQueue(10), asyncio.Event()
-        q.put_latest(evs[2])
+        for k, e in enumerate(evs[:6]):   # full copies on frames 0 and 5 only; frame 0 never reaches the task
+            e.frame.hires = e.frame.hires if k in (0, 5) else None
+            ring.add(e.frame)
+            if k:
+                q.put_latest(e)
         stop.set()
         stats = await task.run(q, ring, stop)
+        self.assertEqual(stats["waited"], 4)                                        # frames 1-4 skipped
+        self.assertEqual(sent[0][1]["frame_id"], evs[5].frame.identity.source_frame_id)
+        self.assertEqual(sent[0][1]["persons_boxes"], len(evs[5].result.boxes))     # boxes of that same frame
         self.assertEqual((sent[0][1]["width"], sent[0][1]["height"]), (720, 1280))   # full resolution, not 640
-        self.assertEqual(sent[0][1]["frame_id"], evs[0].frame.identity.source_frame_id)
         self.assertEqual(stats["sent_low_res"], 0)
 
 

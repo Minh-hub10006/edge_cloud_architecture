@@ -76,7 +76,7 @@ class CrowdTask:
         cfg = self.cfg
         throttle = cfg.get("throttle") or (lambda: 1.0)
         area = (cfg.get("zones") or {}).get("area")
-        next_ns, stats = 0, {"dense_frames": 0, "sent": 0, "no_image": 0, "sent_low_res": 0}
+        next_ns, stats = 0, {"dense_frames": 0, "sent": 0, "no_image": 0, "sent_low_res": 0, "waited": 0}
         while (event := await next_event(queue, stop)) is not None:
             frame = event.frame
             people = [b for b in event.result.boxes if b.class_id == PERSON and in_zone(b, area)]
@@ -86,6 +86,10 @@ class CrowdTask:
             stats["dense_frames"] += 1
             t = frame.capture_mono_ns
             if t < next_ns:
+                continue
+            if getattr(frame, "hires", None) is None and ring.hires:
+                # 15/11: wait for a dense frame with its own full copy, so frame_id, persons_boxes and the picture agree
+                stats["waited"] += 1
                 continue
             image = encode_image(frame, ring, int(cfg["crowd_long_side"]), int(cfg["crowd_jpeg_quality"]))
             if image is None:

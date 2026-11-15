@@ -10,7 +10,8 @@
 Frames: `per-seq` labeled frames spread evenly over each of the 40 test sequences. Variants, all RT-DETRv2-S:
   ref = full model on the uncompressed 640 frame; C = full model on the JPEG q85 640 frame (edge_agent
   encode_cloud_jpeg); B-float = float head + tail (= ref, sanity); B-<npu> = NPU head output (snpe-net-run) + tail,
-  with the cut tensor sent as uint8 + zstd (per-tensor range) as on the wire.
+  with the cut tensor sent as uint8 + zstd (per-tensor range) as on the wire; *_2bit = the same through CUT2 2-bit
+  (contracts/cut_tensor.py pack/unpack, the live default since 14/11), mean wire size printed per variant.
 Scoring = scripts/detrac.py: vehicles = COCO car/bus/truck, score >= .6 (MODEL_COMPARE), ignored regions dropped,
 greedy IoU .5; micro F1 over all frames.
 """
@@ -102,6 +103,14 @@ def _u8_wire(t):
     return (q.astype(np.float32) / 255 * (hi - lo) + lo).astype(np.float32)
 
 
+def _cut2_wire(t, sizes):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from contracts.cut_tensor import pack, unpack
+    data = pack(np.ascontiguousarray(t, dtype=np.float32), width=int(sizes[0, 0]), height=int(sizes[0, 1]),
+                head_id="g3", bits=2)
+    return unpack(data, expected_head_id="g3")[0].astype(np.float32), len(data)
+
+
 def score(out, full_p, head_p, tail_p, npu_list, npu_outs):
     import onnxruntime as ort
     out = Path(out)
@@ -112,7 +121,7 @@ def score(out, full_p, head_p, tail_p, npu_list, npu_outs):
     manifest = {r["raw"]: r for r in json.loads((out / "manifest.json").read_text(encoding="utf-8"))}
     order = [Path(line.strip()).name for line in open(npu_list) if line.strip()]
     assert set(order) == set(manifest), "NPU test list and manifest differ"
-    gt_cache, tot = {}, {}
+    gt_cache, tot, wire = {}, {}, {}
     for i, name in enumerate(order):
         r = manifest[name]
         if "gt" in r:  # VN: auto labels carried in the manifest, no ignored regions
@@ -132,12 +141,19 @@ def score(out, full_p, head_p, tail_p, npu_list, npu_outs):
         preds = {"ref": full.run(None, {"images": xn, "orig_target_sizes": sizes}),
                  "C_jpeg85": full.run(None, {"images": xj.transpose(2, 0, 1)[None], "orig_target_sizes": sizes}),
                  "B_float_u8": tail.run(None, {cut: _u8_wire(mid), "orig_target_sizes": sizes})}
+        two, n = _cut2_wire(mid, sizes)
+        preds["B_float_2bit"] = tail.run(None, {cut: two, "orig_target_sizes": sizes})
+        wire.setdefault("B_float_2bit", []).append(n)
         for d in npu_outs:
             (f,) = list((Path(d) / f"Result_{i}").rglob("*.raw"))
             npu = np.fromfile(f, dtype=np.float32).reshape(1, mid.shape[2], mid.shape[3], mid.shape[1])
             npu = np.ascontiguousarray(npu.transpose(0, 3, 1, 2))
             preds[f"B_{Path(d).name.removeprefix('npu_out_')}_u8"] = tail.run(
                 None, {cut: _u8_wire(npu), "orig_target_sizes": sizes})
+            two, n = _cut2_wire(npu, sizes)
+            key = f"B_{Path(d).name.removeprefix('npu_out_')}_2bit"
+            preds[key] = tail.run(None, {cut: two, "orig_target_sizes": sizes})
+            wire.setdefault(key, []).append(n)
         for k, p in preds.items():
             tp, fp, fn = match_frame(gt, _vehicles(p, names, set(r.get("classes", VEHICLES))), ann["ignored"])
             t = tot.setdefault(k, [0, 0, 0])
@@ -147,8 +163,10 @@ def score(out, full_p, head_p, tail_p, npu_list, npu_outs):
     for k, (tp, fp, fn) in tot.items():
         f1 = 2 * tp / max(2 * tp + fp + fn, 1)
         rows.append({"variant": k, "tp": tp, "fp": fp, "fn": fn, "precision": tp / max(tp + fp, 1),
-                     "recall": tp / max(tp + fn, 1), "f1": f1})
-        print(f"  {k:22s} F1 {f1:.4f}  P {rows[-1]['precision']:.4f}  R {rows[-1]['recall']:.4f}  (tp {tp} fp {fp} fn {fn})")
+                     "recall": tp / max(tp + fn, 1), "f1": f1,
+                     "wire_kb": round(float(np.mean(wire[k])) / 1024, 1) if k in wire else None})
+        kb = f"  {rows[-1]['wire_kb']} KB" if k in wire else ""
+        print(f"  {k:22s} F1 {f1:.4f}  P {rows[-1]['precision']:.4f}  R {rows[-1]['recall']:.4f}  (tp {tp} fp {fp} fn {fn}){kb}")
     (out / "g3_result.json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
 
 
