@@ -2,7 +2,7 @@
 # One Edge's results of the last MINUTES, for the content checks on the laptop (13/11). Read only. Run on 249:
 #   bash scripts/export_run.sh edge-252 10        -> ~/run_export_edge-252.tgz
 # Holds frames / detections / counts / events / plates / crowd / actions as CSV, plus the plate crops and event snapshots they
-# name (at most 60 / 30). Laptop: python -B scripts/verify_db_export.py <unpacked dir> --videos DIR --map cam-1=vn9 ...
+# name (newest run of each camera, at most 20 / 10 per camera). Laptop: python -B scripts/verify_db_export.py <unpacked dir> --videos DIR --map cam-1=vn9 ...
 set -euo pipefail
 node="${1:?NODE e.g. edge-252}"; minutes="${2:-10}"
 out="$(mktemp -d)/run_export_$node"; mkdir -p "$out/media"
@@ -15,13 +15,23 @@ q "SELECT *, extract(epoch from started_at) * 1000 AS start_ms FROM events WHERE
 q "SELECT * FROM plates WHERE $w capture_time > now() - interval '$minutes minutes'" plates
 q "SELECT * FROM crowd WHERE $w capture_time > now() - interval '$minutes minutes'" crowd
 q "SELECT * FROM actions WHERE $w capture_time > now() - interval '$minutes minutes'" actions
-copy() {  # the image paths named in one CSV column, at most $3 files
-  # the limit inside python: 13/11 "| head" closed the pipe early, python failed and set -e stopped the export
-  python3 -c "import csv,sys; [print(p) for p in [r[sys.argv[2]] for r in csv.DictReader(open(sys.argv[1])) if r[sys.argv[2]]][:int(sys.argv[3])]]" "$1" "$2" "$3" \
-    | while read -r f; do if [[ -f "$f" ]]; then cp "$f" "$out/media/"; fi; done
+copy() {  # the image paths named in one CSV column: newest run of each camera, at most $3 per camera, spread out
+  # 15/11: the first rows were an older run when the window held two, so the newest run's crops were never checked.
+  # The limit inside python: 13/11 "| head" closed the pipe early, python failed and set -e stopped the export.
+  python3 - "$1" "$2" "$3" <<'PY' | while read -r f; do if [[ -f "$f" ]]; then cp "$f" "$out/media/"; fi; done
+import csv, sys
+rows = [r for r in csv.DictReader(open(sys.argv[1])) if r[sys.argv[2]]]
+newest = {}
+for r in rows:
+    newest[r["camera_id"]] = max(newest.get(r["camera_id"], 0), int(r["stream_epoch"]))
+for cam, epoch in sorted(newest.items()):
+    mine = [r[sys.argv[2]] for r in rows if r["camera_id"] == cam and int(r["stream_epoch"]) == epoch]
+    for p in mine[::max(1, len(mine) // int(sys.argv[3]))][:int(sys.argv[3])]:
+        print(p)
+PY
 }
-copy "$out/plates.csv" image_path 60
-copy "$out/events.csv" snapshot_path 30
+copy "$out/plates.csv" image_path 20
+copy "$out/events.csv" snapshot_path 10
 echo "images: $(ls "$out/media" | wc -l)"
 tar -czf ~/run_export_"$node".tgz -C "$(dirname "$out")" "$(basename "$out")" && rm -rf "$(dirname "$out")"
 ls -la ~/run_export_"$node".tgz

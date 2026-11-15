@@ -67,9 +67,13 @@ class Report:
                            "detail": detail})
         print(f"  {'ok  ' if ok else 'FAIL'} {cam:6s} {check:10s} {value:>10s}  (gate {gate}) {detail}", flush=True)
 
-    def share(self, cam, check, good, total, need, detail=""):
+    def share(self, cam, check, good, total, need, detail="", rows=0):
+        """rows: table rows behind an image check - rows but no image examined fails (15/11: 0/0 passed silently)."""
         v = good / total if total else 1.0
-        self.add(cam, check, f"{good}/{total}", f">= {need:.1%}" if need < 1 else "100 %", v >= need, detail)
+        if rows and not total:
+            detail = f"{rows} rows but no image to check (export copied none of this run?) {detail}"
+        self.add(cam, check, f"{good}/{total}", f">= {need:.1%}" if need < 1 else "100 %",
+                 v >= need and not (rows and not total), detail)
 
 
 class Videos:
@@ -274,7 +278,7 @@ def main():
             good += best < 12
             if best >= 12:
                 bad.append(f"{os.path.basename(f)} best diff {best:.1f}")
-        rep.share(cam, "snapshot", good, total, 1.0, "; ".join(bad[:2]))
+        rep.share(cam, "snapshot", good, total, 1.0, "; ".join(bad[:2]), rows=sum(bool(r["snapshot_path"]) for r in mine))
 
     # ------------------------------------------------------------------ plates
     pls = [r for r in rows(a.dir, "plates") if keep(r)]
@@ -296,7 +300,7 @@ def main():
             inside = (float(v["x1"]) * w - 8 <= x and x + crop.shape[1] <= float(v["x2"]) * w + 8
                       and float(v["y1"]) * h - 8 <= y and y + crop.shape[0] <= float(v["y2"]) * h + 8)
             found += score >= .8 and inside
-        rep.share(cam, "plate crop", found, checked, .9)
+        rep.share(cam, "plate crop", found, checked, .9, rows=sum(bool(p["image_path"]) for p in mine))
         valid = lambda s: s in ("t", "true", "True")   # noqa: E731
         rep.share(cam, "plate flag", sum(valid(p["valid"]) == valid_plate(p["text"]) for p in mine), len(mine), 1.0)
         tracks = {b["track_id"] for fb in det[cam].values() for b in fb}
