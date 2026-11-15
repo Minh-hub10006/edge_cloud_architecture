@@ -8,6 +8,8 @@
 2. Load: C concurrent "cameras" (1, 2, 4, 8, 16), each sending single frames back to back; Triton batches them
    (max 4, 8 ms). The big input goes through system shared memory (the Cloud worker runs on 249 too; the container
    must run with --ipc=host), unless --no-shm. Reports img/s, latency p50/p95 and Triton's mean executed batch.
+rtdetr_tail_q (15/11, --models): the tail of the live CUT2 wire - the float head's output packed at 2 bits per value
+(contracts/cut_tensor.py) and fed as codes + per-channel lo/step; parity only (its load: scripts/cloud_v4_load.py).
 Safety: stops all load when the GPU stays >= 450 W or >= 75 C for 3 s (Cloud limits, power raised 5/11).
 """
 import argparse
@@ -81,17 +83,33 @@ def agreement(x, y):
     return 2 * tp / (len(bx) + len(by))
 
 
+def take(big, a, b):   # one input array, or a dict of them (rtdetr_tail_q), frames a..b
+    return {k: v[a:b] for k, v in big.items()} if isinstance(big, dict) else big[a:b]
+
+
 def feeds_for(meta, big, sizes):
     out = {}
     for i in meta.inputs:
-        out[i.name] = sizes if i.name == "orig_target_sizes" else big
+        out[i.name] = sizes if i.name == "orig_target_sizes" else (big[i.name] if isinstance(big, dict) else big)
     return out
+
+
+def cut2_inputs(t, sizes):
+    """Float head outputs -> what the Edge sends at 2 bits and the worker feeds rtdetr_tail_q (codes, lo, step)."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from contracts.cut_tensor import pack, unpack_codes
+    parts = [unpack_codes(pack(np.ascontiguousarray(t[k:k + 1]), width=int(sizes[k][0]), height=int(sizes[k][1]),
+                               head_id="chk", bits=2), expected_head_id="chk")[:3] for k in range(len(t))]
+    return {name: np.ascontiguousarray(np.concatenate([p[j] for p in parts])) for j, name in
+            enumerate(("cut_q", "cut_lo", "cut_step"))}
 
 
 def infer(client, model, feeds):
     ins = []
     for name, x in feeds.items():
-        t = grpcclient.InferInput(name, list(x.shape), "INT64" if x.dtype == np.int64 else "FP32")
+        t = grpcclient.InferInput(name, list(x.shape), {np.dtype(np.int64): "INT64", np.dtype(np.uint8): "UINT8"}
+                                  .get(x.dtype, "FP32"))
         t.set_data_from_numpy(x)
         ins.append(t)
     r = client.infer(model, ins)
@@ -107,9 +125,9 @@ def counters(url, model):
 def parity(client, model, meta, big, sizes, cpu):
     worst_b4, worst_cpu, max_diff = 1.0, 1.0, 0.0
     for g in (0, 4):
-        s4, b4 = infer(client, model, feeds_for(meta, big[g:g + 4], sizes[g:g + 4]))
+        s4, b4 = infer(client, model, feeds_for(meta, take(big, g, g + 4), sizes[g:g + 4]))
         for k in range(4):
-            f = feeds_for(meta, big[g + k:g + k + 1], sizes[g + k:g + k + 1])
+            f = feeds_for(meta, take(big, g + k, g + k + 1), sizes[g + k:g + k + 1])
             s1, b1 = infer(client, model, f)
             sc, bc = cpu.run(["scores", "boxes"], f)
             worst_b4 = min(worst_b4, agreement(dets(s4[k], b4[k]), dets(s1[0], b1[0])))
@@ -177,6 +195,7 @@ def main():
     ap.add_argument("--seconds", type=float, default=10)
     ap.add_argument("--conc", type=int, nargs="+", default=[1, 2, 4, 8, 16])
     ap.add_argument("--no-shm", action="store_true")
+    ap.add_argument("--models", nargs="+", default=MODELS, help=f"default {MODELS}; also rtdetr_tail_q")
     a = ap.parse_args()
     threading.Thread(target=guard, daemon=True).start()
     x, sizes = load_frames(a.frames)
@@ -184,14 +203,15 @@ def main():
     head = ort.InferenceSession(a.head, **cpu)
     t = np.concatenate([head.run(None, {"images": x[k:k + 1]})[0] for k in range(8)])
     client = grpcclient.InferenceServerClient(a.url)
-    for model in MODELS:
+    inputs = {"rtdetr_tail": t, "rtdetr_tail_q": cut2_inputs(t, sizes)}
+    for model in a.models:
         meta = client.get_model_metadata(model)
-        big = t if model == "rtdetr_tail" else x
-        parity(client, model, meta, big, sizes, ort.InferenceSession(f"{a.repo}/{model}/1/model.onnx", **cpu))
+        parity(client, model, meta, inputs.get(model, x), sizes,
+               ort.InferenceSession(f"{a.repo}/{model}/1/model.onnx", **cpu))
     print(f"-- load ({'gRPC copy' if a.no_shm else 'system shared memory'}), {a.seconds:.0f} s per step", flush=True)
-    for model in MODELS:
+    for model in [m for m in a.models if m != "rtdetr_tail_q"]:
         print(f"== {model}", flush=True)
-        load(a, model, client.get_model_metadata(model), t if model == "rtdetr_tail" else x, sizes)
+        load(a, model, client.get_model_metadata(model), inputs.get(model, x), sizes)
     stop_all.set()
 
 

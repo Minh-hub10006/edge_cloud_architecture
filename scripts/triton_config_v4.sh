@@ -77,6 +77,14 @@ trt_block() {   # name -> optimization + warmup for a model listed in TRT_MODELS
     lo="image:1x3x1280x1280"; opt="$lo"; hi="$lo"
     warm='model_warmup [ { name: "batch1" batch_size: 1
   inputs { key: "image" value: { data_type: TYPE_FP32 dims: [ 3, 1280, 1280 ] zero_data: true } } } ]'
+  elif [[ $1 == rtdetr_tail_q ]]; then # path B tail (CUT2 codes + per-channel lo/step, scripts/tail_quant.py), batch 1-4
+    lo="cut_q:1x128x80x80,cut_lo:1x128,cut_step:1x128,orig_target_sizes:1x2"
+    opt="cut_q:4x128x80x80,cut_lo:4x128,cut_step:4x128,orig_target_sizes:4x2"; hi="$opt"
+    warm='model_warmup [ { name: "batch4" batch_size: 4
+  inputs { key: "cut_q" value: { data_type: TYPE_UINT8 dims: [ 128, 80, 80 ] zero_data: true } }
+  inputs { key: "cut_lo" value: { data_type: TYPE_FP32 dims: [ 128 ] zero_data: true } }
+  inputs { key: "cut_step" value: { data_type: TYPE_FP32 dims: [ 128 ] zero_data: true } }
+  inputs { key: "orig_target_sizes" value: { data_type: TYPE_INT64 dims: [ 2 ] zero_data: true } } } ]'
   else                                 # RT-DETR / D-FINE-X: images + orig_target_sizes, batch 1-4
     lo="images:1x3x640x640,orig_target_sizes:1x2"; opt="images:4x3x640x640,orig_target_sizes:4x2"; hi="$opt"
     warm='model_warmup [ { name: "batch4" batch_size: 4
