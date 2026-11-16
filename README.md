@@ -9,6 +9,8 @@ biển số, đếm và ùn tắc, đám đông, đánh nhau / ngã xe / lảng 
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | kiến trúc: máy, thành phần, 5 cách chạy, làn sau, Triton, Kafka, DB |
 | [docs/FLOWS.md](docs/FLOWS.md) | các luồng dữ liệu và luồng xử lý sự cố |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | cài, chạy, kiểm tra trên từng máy; file model; lỗi đã gặp và cách xử lý |
+| [docs/HANDOVER.md](docs/HANDOVER.md) | **bàn giao**: dựng lại từ đầu, file không có trong repo (ở đâu, SHA, cách tạo lại), điểm nối cho web / DRL, việc còn mở |
+| [docs/EDGE_NPU.md](docs/EDGE_NPU.md) | Edge 246 / 252: các khối phần cứng, giải mã, daemon NPU, chuyển model sang NPU, model chia đôi |
 
 ## Cấu trúc thư mục
 
@@ -23,9 +25,10 @@ biển số, đếm và ùn tắc, đám đông, đánh nhau / ngã xe / lảng 
 | `drl/`, `benchmark/` | khung DRL và công cụ đo (dùng bởi agent / script) |
 | `legacy/adapters/` | adapter NPU/SNPE (daemon, YOLO trên NPU) mà v4 dùng lại |
 | `native/` | mã nguồn daemon SNPE |
-| `scripts/` | chạy (`run_*_v4.sh`), cấu hình Triton (`triton_config_v4.sh`), DB (`db/schema.sql`), cấu hình từng Edge (`hosts/edge-*.sh`); kiểm nội dung Edge → DB (`export_run.sh`, `verify_db_export.py`, `review_page.py`), tài nguyên (`resource_log.py`), bộ giải mã (`hw_frame_dump.py`, `hw_stress.py`), nén tensor (`compress_survey.py`, `tail_quant.py`), OCR (`plate_ocr_parity.py`) |
+| `scripts/` | chạy (`run_*_v4.sh`), cấu hình Triton (`triton_config_v4.sh`), DB (`db/schema.sql`), cấu hình từng Edge (`hosts/edge-*.sh`); kiểm nội dung Edge → DB (`export_run.sh`, `verify_db_export.py`, `review_page.py`), đo theo kịch bản (`scenario.sh`, `meas_summary.py`, `cloud_v4_load.py`), tài nguyên (`resource_log.py`, `resource_log_win.sh`), bộ giải mã (`hw_frame_dump.py`, `hw_stress.py`), nén tensor (`compress_survey.py`, `tail_quant.py`), OCR (`plate_ocr_parity.py`) |
 | `yolo11s_contract.py` | tiền / hậu xử lý YOLO11s dùng chung (cách A trên Edge, nửa đầu B trên 247) |
-| `tests/` | ~630 test tự động: `python -m pytest tests` (cần thêm `lap`, `grpcio-tools` cho vài test ByteTrack / proto) |
+| `tests/` | ~640 test tự động: `python -m unittest discover -s tests` (cần thêm `lap`, `grpcio-tools` cho vài test ByteTrack / proto) |
 
-Không có trong repo: file model (`.onnx`, `.dlc`, `.pt`), video thử, kết quả đo — xem danh sách và vị trí trong
+Không có trong repo: file model (`.onnx`, `.dlc`, `.pt`), video thử, SDK, kết quả đo — danh sách, vị trí, mã SHA và cách
+tạo lại ở [HANDOVER §3](docs/HANDOVER.md#3-file-không-có-trong-repo-ở-đâu-kiểm-bằng-gì-tạo-lại-thế-nào); đường dẫn trên từng máy ở
 [RUNBOOK §4](docs/RUNBOOK.md#4-file-model-và-dữ-liệu-không-có-trong-repo).

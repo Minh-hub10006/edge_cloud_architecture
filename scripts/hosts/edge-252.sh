@@ -1,4 +1,4 @@
-# Edge252: QCS6490 ODK (Yupik), Ubuntu 20.04 (glibc 2.31), user root, 6 cores.
+# Edge252: QCS6490 ODK (Yupik), Ubuntu 20.04 (glibc 2.31), user root, 8 cores (resource_log 15/11).
 # Daemons are built on this host (scripts/setup_edge_node.sh): 246 binaries need glibc 2.39.
 NODE_ID=edge-252
 EDGE_IP=192.168.180.252  # v50: browsers fetch this Edge's video from its own MediaMTX

@@ -15,6 +15,8 @@ tar -xzf ~/edge_v4_code_<ngày>.tgz -C ~          # trên từng máy
 
 ## 2. Cloud 249
 
+Lần đầu trên máy mới: tạo container Kafka trước (lệnh ở [HANDOVER §2.1](HANDOVER.md#21-cloud-máy-có-gpu-nvidia--docker-hiện-là-249-rtx-4090)).
+
 ```bash
 cd ~/edge_video_platform_v4
 bash scripts/run_results_v4.sh db                 # lần đầu: tạo mật khẩu (~/.v4_db.env, mode 600), DB, schema
@@ -86,17 +88,24 @@ Mọi Edge: `~/test_videos/vn6*.mp4`, `vn9*.mp4`; MediaMTX trong `~/edge_artifac
 
 ```bash
 # 249: xuất một Edge (N phút gần nhất) -> ~/run_export_<node>.tgz; trên laptop giải nén rồi kiểm
-bash scripts/export_run.sh edge-246 15
-python -B scripts/verify_db_export.py <thư mục> --videos <thư mục video phân tích> --map cam-1=vn9 cam-2=vn6 ...
+bash scripts/export_run.sh edge-246 120         # ảnh mẫu: lần chạy mới nhất của từng camera
+python -B scripts/verify_db_export.py <thư mục> --videos <video phân tích> --main-videos <luồng chính> --map cam-1=vn9:N cam-2=vn6:B ...
 python -B scripts/review_page.py <thư mục> --videos <...> --map ...      # trang xem lại theo UC (mở index.html)
-# tài nguyên trong lúc chạy (Linux): máy, nhóm tiến trình, GPU + lô Triton (Cloud)
+# một kịch bản đo trên một Edge (4 camera, tự ghi tài nguyên; S0 S1a S1b S2a S2b S3 S4), cùng giờ bắt đầu trên các Edge
+bash scripts/scenario.sh S1b 246 180 HH:MM:SS          # 252: thêm TZ=UTC-7 ở đầu (đồng hồ 252 là UTC)
+# tài nguyên: máy, nhóm tiến trình, GPU + lô Triton (Cloud); dừng bằng Ctrl+C / SIGTERM vẫn in bảng. 247: resource_log_win.sh
 python3 -B scripts/resource_log.py --role edge|cloud --seconds 300
+python -B scripts/meas_summary.py <thư mục đo> S1a S1b   # bảng tổng hợp (laptop)
+# sức chứa Cloud bằng camera giả 15 khung/s (249; tạo topic cloud.detection-result.v1.load trước, lệnh ở đầu file)
+python -B scripts/cloud_v4_load.py --frames DIR --head head.onnx --head-id rtl2-onnx-fp32 --mode rtdetr|split|dfinex --cameras 12 24 36 48
 # bộ giải mã: ảnh đưa cho model = ảnh gốc? nhảy khung đúng? N luồng cùng lúc có lỗi GPU?
 python -B scripts/hw_frame_dump.py ~/test_videos/vn9.mp4 --decoder <dec> --frames 0 300 --seek 1234
 python -B scripts/hw_stress.py ~/test_videos/vn9.mp4 --decoder <dec> --streams 4 --seconds 60
 ```
-Cổng `verify_db_export.py`: số khung khớp 100 %; box nằm trên vật thể của model tham chiếu (YOLO11m) ≥ 50 %, cùng lớp
-≥ 80 % (YOLO11s hay lẫn người / xe máy, xe tải / ô tô: 78–81 %); ảnh biển nằm trong xe của nó trên đúng khung ≥ 90 %.
+`verify_db_export.py` kiểm mọi bảng (cổng ghi ở đầu file): số khung và dải số khung của luồng chính khớp 100 %; toạ độ, bảng
+`frames`, thứ tự, cách chạy; box nằm trên vật thể của model tham chiếu (YOLO11m) ≥ 50 %, cùng nhóm lớp ≥ 85 %; mã bám liền
+mạch ≥ 95 %; số đếm khớp box; ảnh sự kiện đúng camera; ảnh biển trong xe của nó ≥ 90 %; đám đông khớp box của đúng khung.
+Phép kiểm ảnh có dòng mà không có ảnh nào để kiểm thì tính là không đạt.
 
 ## 6. Kiểm tra kết quả trong DB (249)
 
@@ -126,6 +135,9 @@ Giờ trong DB là UTC.
 | Cách D chỉ ~50 % khung khi 3 Edge cùng chạy | D-FINE-X 1 bản, ONNX Runtime | 2 bản + 6 suất + TensorRT FP32 (đã áp) |
 | Deadline / mọi khung bị coi là quá hạn (247) | đồng hồ lệch | bật `w32time` trên 247 |
 | Đọc chữ biển đúng 2–3/19 | model EasyOCR | việc của nhóm CV (bộ thử 40 ảnh có sẵn) |
+| Cách B / C / D trên một Edge chỉ 30–60 % khung, `deadline_exceeded`, độ trễ vài trăm ms, CPU thấp | đường mạng Edge → Cloud mất gói (252, 15/11: 11 % gói 1472 byte, TCP ~10 Mbit/s) | `ping -c 300 -i 0.01 -s 1472 <IP Cloud>` phải mất 0 %; đổi dây / cổng switch / bộ chuyển mạng |
+| 247: `scenario.sh` không bao giờ in `done` | MediaMTX vừa khởi động giữ đầu ra của script (Git Bash) | đã sửa trong `run_edge_v4.sh` (15/11) |
+| Bảng `crowd`: số box người không khớp khung | số box đếm ở khung khác khung gửi ảnh | đã sửa (15/11): chỉ gửi khung có ảnh lớn của chính nó |
 
 ## 8. Giới hạn hiện tại
 
@@ -135,3 +147,6 @@ Giờ trong DB là UTC.
 - Cách B nén 2 bit (~90 KB) vẫn lớn hơn JPEG của C (~76 KB); xuống thấp hơn cần huấn luyện lớp nén.
 - ST-GCN++ dùng trọng số NTU60, chưa huấn luyện lại; ngưỡng đánh nhau 0,3 tạm.
 - DRL chưa cắm vào v4.
+- Mạng của 252 đang mất gói ở chiều gửi lên (xem §7); các số B / C / D của 252 sau 15/11 bị giới hạn bởi mạng.
+- `frames.latency_ms` phụ thuộc đồng hồ Edge / Cloud (247 lệch ~0,36 s); số mạng vào của Cloud trong `resource_log.py` đếm cả cầu nối Docker.
+- Danh sách đầy đủ việc còn mở: [HANDOVER §7](HANDOVER.md#7-việc-còn-mở-khi-bàn-giao).
