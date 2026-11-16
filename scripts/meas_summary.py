@@ -65,7 +65,9 @@ def win_edge(sys_path, gpu_path):
             "agents": st.mean(sum(val(r, i) for i in py) for r in act) / 100,
             "out": st.mean(sum(val(r, i) for i in nic) for r in act) * 8 / 1e6,
             "gpu%": st.mean(float(x[1]) for x in g) if g else float("nan"),
-            "gpu_mem": max(float(x[2]) for x in g) if g else float("nan")}, win
+            "gpu_mem": max(float(x[2]) for x in g) if g else float("nan"),
+            # Windows has no thermal zones, GPU temperature only
+            "temp_max": max(float(x[4]) for x in g) if g else float("nan")}, win
 
 
 def cloud(path, win):
@@ -104,7 +106,7 @@ def scenario(root, name):
             res[host], w = linux_edge(f, utc=host == "252") if f else (None, None)
         if w:
             wins.append(w)
-    print("\n| Edge | s | CPU % | camera agents (cores) | decoders | NPU daemons | RAM MB | max C | out Mbit/s | min CMA MB | GPU % |")
+    print("\n| Edge | s | CPU % | camera agents (cores) | decoders | NPU daemons | RAM MB | max C (247: GPU) | out Mbit/s | min CMA MB | GPU % |")
     print("|---|---|---|---|---|---|---|---|---|---|---|")
     for host, r in res.items():
         if r is None:
