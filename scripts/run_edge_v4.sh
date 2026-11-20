@@ -10,6 +10,7 @@
 #   e.g. bash scripts/run_edge_v4.sh 246 "vn9:B vn6:B" 120          START_AT lets 3 Edges begin together (NTP clocks).
 # Needs: ~/test_videos/<video>.mp4 and <video>_main.mp4 (scripts/make_main_video.py), v4 Cloud workers + Kafka on 249.
 # Analytics decode on the CPU (OpenCV); V4_DECODER=v4l2h264dec|qtic2vdec switches to hardware (open loop 7/11).
+# V4_SOURCE_CODEC=H265 selects hardware H.265 RTP depayload/parse/decode; H.264 remains the default.
 # V4_HW_SIZE=640 (with V4_DECODER) also resizes on the GPU to 640x640 (decision 8/11).
 # V4_SLOW_TASKS=check,... turns the slow lane on (edge_agent/slow_lane.py); results in each cam<i>.log "slow_lane".
 set -uo pipefail
@@ -117,8 +118,15 @@ for item in $spec; do
     C) args=(--mode rtdetr_cloud) ;;
     D) args=(--mode dfine_x_cloud) ;;
   esac
+  optional_args=()
+  [[ -z "${V4_DECODER:-}" ]] || optional_args+=(--decoder "$V4_DECODER")
+  [[ -z "${V4_SOURCE_CODEC:-}" ]] || optional_args+=(--source-codec "$V4_SOURCE_CODEC")
+  [[ -z "${V4_HW_SIZE:-}" ]] || optional_args+=(--hw-size "$V4_HW_SIZE")
+  [[ -z "${V4_SLOW_TASKS:-}" ]] || optional_args+=(--slow-tasks "$V4_SLOW_TASKS")
+  [[ -z "${V4_SLOW_CONFIG:-}" ]] || optional_args+=(--slow-config "$V4_SLOW_CONFIG")
+  [[ -z "${V4_PROFILES:-}" ]] || optional_args+=(--camera-profile "$V4_PROFILES")
   "$py" -B -u -m edge_agent.control_v1 --video "$EDGE_HOME/test_videos/$v.mp4" --main-video "$EDGE_HOME/test_videos/${v}_main.mp4" \
-    ${V4_DECODER:+--decoder "$V4_DECODER"} ${V4_HW_SIZE:+--hw-size "$V4_HW_SIZE"} ${V4_SLOW_TASKS:+--slow-tasks "$V4_SLOW_TASKS"} ${V4_SLOW_CONFIG:+--slow-config "$V4_SLOW_CONFIG"} ${V4_PROFILES:+--camera-profile "$V4_PROFILES"} ${plate_args[@]+"${plate_args[@]}"} --loop-source --frames $((secs * 15)) --start-frame "${start:-0}" "${args[@]}" --policy observe --cloud-inflight 2 \
+    "${optional_args[@]}" ${plate_args[@]+"${plate_args[@]}"} --loop-source --frames $((secs * 15)) --start-frame "${start:-0}" "${args[@]}" --policy observe --cloud-inflight 2 \
     --target-fps 15 --fps-levels 15 --preview-fps 15 --transport kafka --kafka-bootstrap "$cloud:29092" \
     --rtsp-base rtsp://127.0.0.1:8554 --cloud-frame-source jpeg --node-id "$NODE_ID" --camera-id "cam-$i" --stream-id v4-run \
     --cloud-model-ids "$ids" --capability "$EDGE_CAPABILITY" --metrics-port 0 --run-timeout-s $((secs + 120)) \

@@ -584,8 +584,9 @@ def parser():
     p.add_argument("--frames", type=int, default=1800)
     p.add_argument("--loop-source", action="store_true",
                    help="replay the clip until --frames (long dataset runs); identity keeps increasing")
-    p.add_argument("--decoder", default="", help="hardware decode of --video: v4l2h264dec (246) or qtic2vdec (252); "
-                   "empty = OpenCV on the CPU (pixel-identical, about twice the CPU)")
+    p.add_argument("--decoder", default="", help="hardware decode of --video: board-specific GStreamer decoder")
+    p.add_argument("--source-codec", choices=("H264", "H265"), default="H264",
+                   help="encoded codec of --video when using --decoder; H.265 is hardware-decoded directly")
     p.add_argument("--hw-size", type=int, default=0, help="with --decoder: resize on the GPU (qtivtransform) to this "
                    "square size, e.g. 640; ~9x less CPU, RT-DETR F1 -1.1 pt on VN (8/11). 0 = full frames")
     p.add_argument("--slow-tasks", default="", help="slow lane tasks, comma separated (edge_agent/slow_lane.TASKS); "
@@ -665,7 +666,9 @@ def parser():
                    "set = send plate crops of every published frame to the Cloud plate OCR")
     p.add_argument("--plate-imgsz", type=int, default=320)
     p.add_argument("--plate-conf", type=float, default=.3)
-    p.add_argument("--plate-target", default="", help="Cloud plate OCR host:port (default: grpc-target host:50062)")
+    p.add_argument("--plate-target", default="", help="Cloud plate OCR host:port for gRPC mode")
+    p.add_argument("--plate-transport", choices=("grpc", "kafka"), default="grpc",
+                   help="send crops to Cloud OCR directly or queue them for the existing Kafka OCR worker")
     p.add_argument("--plate-every", type=int, default=3, help="re-read a plate every N frames")
     p.add_argument("--plate-cap", type=int, default=5, help="max reads per plate (0 = no limit)")
     p.add_argument("--plate-confirm", type=int, default=2, help="stop after N equal valid reads (0 = never)")
@@ -742,12 +745,16 @@ async def run(args):
         slow_names = {n.strip() for n in args.slow_tasks.split(",")}
         if "plates" in slow_names and not args.plate_detector:
             raise ValueError("--slow-tasks plates needs --plate-detector")
-        if args.plate_detector and "plates" not in slow_names:   # v50 plate branch (every frame, gRPC OCR)
-            from contracts.plate_ocr_wire import PlateOcrClient
+        if args.plate_detector and "plates" not in slow_names:
             from edge_agent.plate_branch import PlateBranch, load_plate_detector
             from edge_agent.plate_policy import PlateReadPolicy
-            plate_client = PlateOcrClient(args.plate_target or f"{args.grpc_target.rsplit(':', 1)[0]}:50062",
-                                          timeout_s=args.rpc_timeout)
+            if args.plate_transport == "kafka":
+                from edge_agent.plate_branch import KafkaPlateClient
+                plate_client = KafkaPlateClient(args.kafka_bootstrap)
+            else:
+                from contracts.plate_ocr_wire import PlateOcrClient
+                plate_client = PlateOcrClient(args.plate_target or f"{args.grpc_target.rsplit(':', 1)[0]}:50062",
+                                              timeout_s=args.rpc_timeout)
             plate_log = open(Path(args.plate_log), "x", encoding="utf-8") if args.plate_log else None
             print(f"[Control v1] Loading plate detector {args.plate_detector}", flush=True)
             plate = PlateBranch(
@@ -801,7 +808,8 @@ async def run(args):
         source = OpenCVFrameSource(args.video, node_id=key[0], camera_id=key[1], stream_id=key[2],
                                    stream_epoch=key[3], max_frames=args.frames, loop=args.loop_source,
                                    start_frame=args.start_frame, decoder=args.decoder or None, hw_size=args.hw_size,
-                                   hires_every=args.hires_every if slow_names & {"plates", "crowd", "check", "fight", "crash"} else 0)
+                                   hires_every=args.hires_every if slow_names & {"plates", "crowd", "check", "fight", "crash"} else 0,
+                                   source_codec=args.source_codec)
         profile = MediaProfile(width=args.width, height=args.height, fps=args.preview_fps,
                                bitrate_kbps=args.bitrate_kbps, gop_frames=args.preview_fps)
         if args.main_video:  # like a camera's main stream: forwarded as it is, the Edge encodes nothing

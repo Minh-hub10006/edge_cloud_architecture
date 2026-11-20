@@ -3,6 +3,7 @@ with PlateReadPolicy, send them to the Cloud plate OCR service and log every rea
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections import Counter
 from time import perf_counter_ns, time_ns
@@ -59,6 +60,55 @@ def crop_plate(frame, box, pad: int = 5):
     return frame[max(0, y1 - pad):min(h, y2 + pad), max(0, x1 - pad):min(w, x2 + pad)]
 
 
+class KafkaPlateClient:
+    """Queue plate crops for the existing Cloud OCR worker without blocking the frame pipeline."""
+
+    def __init__(self, bootstrap: str, topic: str = "edge.plate-crop.v1") -> None:
+        self.bootstrap = bootstrap
+        self.topic = topic
+        self.producer = None
+        self.start_lock = asyncio.Lock()
+
+    async def _ensure_started(self) -> None:
+        if self.producer is not None:
+            return
+        async with self.start_lock:
+            if self.producer is None:
+                from aiokafka import AIOKafkaProducer
+
+                producer = AIOKafkaProducer(bootstrap_servers=self.bootstrap, max_request_size=2 << 20)
+                await producer.start()
+                self.producer = producer
+
+    async def read(self, header: dict, jpeg: bytes) -> dict:
+        await self._ensure_started()
+        node_id, camera_id, stream_id, stream_epoch = header["stream"]
+        frame_id = int(header["frame"])
+        event = {
+            "schema_version": 1,
+            "node_id": node_id,
+            "camera_id": camera_id,
+            "stream_id": stream_id,
+            "stream_epoch": int(stream_epoch),
+            "track_id": str(header["track"]),
+            "frame_id": frame_id,
+            "capture_utc_ns": int(header.get("sent_utc_ns", time_ns())),
+            "vehicle_class": "vehicle",
+            "read_no": frame_id,
+            "det_conf": float(header.get("det_conf", 0.0)),
+            "jpeg_b64": base64.b64encode(jpeg).decode("ascii"),
+        }
+        key = f"{node_id}:{camera_id}:{stream_epoch}:{event['track_id']}:{frame_id}".encode()
+        await self.producer.send_and_wait(self.topic, key=key,
+                                          value=json.dumps(event, separators=(",", ":")).encode())
+        return {"text": "", "queued": True}
+
+    async def close(self) -> None:
+        if self.producer is not None:
+            await self.producer.stop()
+            self.producer = None
+
+
 class PlateBranch:
     def __init__(self, detector, policy: PlateReadPolicy, client, *, stream_key, max_inflight: int = 16,
                  jpeg_quality: int = 95, queue_capacity: int = 2, log=None) -> None:
@@ -80,7 +130,7 @@ class PlateBranch:
         sent = time_ns()
         try:
             reply = await self.client.read({"stream": self.stream, "track": track.track_id, "frame": frame_id,
-                                            "sent_utc_ns": sent}, jpeg)
+                                            "sent_utc_ns": sent, "det_conf": float(box[4]) if len(box) > 4 else 0.0}, jpeg)
         except Exception as exc:
             self.stats["errors"] += 1
             self.reasons[type(exc).__name__] += 1

@@ -22,7 +22,7 @@ class OpenCVFrameSource:
         self, source: str | int, *, node_id: str, camera_id: str,
         stream_id: str, stream_epoch: int = 0, max_frames: int | None = None,
         realtime_file: bool = True, loop: bool = False, prefetch: int = 0, start_frame: int = 0,
-        decoder: str | None = None, hw_size: int = 0, hires_every: int = 0,
+        decoder: str | None = None, hw_size: int = 0, hires_every: int = 0, source_codec: str = "H264",
     ) -> None:
         if max_frames is not None and max_frames <= 0:
             raise ValueError("max_frames must be positive")
@@ -53,6 +53,9 @@ class OpenCVFrameSource:
         self.clock_origin_mono_ns = None
         # v4 (7/11): a GStreamer hardware decoder (media/hw_capture.py), pixel-identical to OpenCV; None = OpenCV on the CPU.
         self.decoder = decoder
+        self.source_codec = str(source_codec).upper()
+        if self.source_codec not in {"H264", "H265"}:
+            raise ValueError("source_codec must be H264 or H265")
         # 8/11: with a decoder, also resize on the GPU to hw_size x hw_size (stretched); 0 = full frames.
         if hw_size and not decoder:
             raise ValueError("hw_size needs a hardware decoder")
@@ -66,7 +69,7 @@ class OpenCVFrameSource:
         if self.decoder:
             from media.hw_capture import HwCapture
             cap = await asyncio.to_thread(HwCapture, self.source, decoder=self.decoder, size=self.hw_size,
-                                          hires_every=self.hires_every)
+                                          hires_every=self.hires_every, codec=self.source_codec)
         else:
             cap = await asyncio.to_thread(cv2.VideoCapture, self.source)
         if not cap.isOpened():

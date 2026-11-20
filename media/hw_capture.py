@@ -34,13 +34,20 @@ SYSTEM_ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": os.environ.get("HO
 CAP_PROP_POS_MSEC, CAP_PROP_POS_FRAMES, CAP_PROP_FPS = 0, 1, 5  # cv2 property ids
 
 
-def gst_source(source: str, decoder: str, io_mode: str = "") -> list[str]:
-    """io_mode (V4L2 decoders): capture-io-mode = auto | mmap | userptr | dmabuf ... (8/11: which memory the decoded
-    frames land in; reading the default uncached buffers cost 0.62 cores per 1080x1920 stream)."""
-    head = (["rtspsrc", f"location={source}", "protocols=tcp", "latency=200", "!", "rtph264depay"]
+def gst_source(source: str, decoder: str, io_mode: str = "", codec: str = "H264") -> list[str]:
+    """Build a GStreamer depay/parse/decode path for an explicitly selected camera codec."""
+    codec = str(codec).upper()
+    codec_elements = {
+        "H264": ("rtph264depay", "h264parse"),
+        "H265": ("rtph265depay", "h265parse"),
+    }
+    if codec not in codec_elements:
+        raise ValueError(f"unsupported source codec: {codec}")
+    depay, parser = codec_elements[codec]
+    head = (["rtspsrc", f"location={source}", "protocols=tcp", "latency=200", "!", depay]
             if str(source).startswith("rtsp://") else ["filesrc", f"location={source}", "!", "qtdemux"])
     dec = [decoder] + ([f"capture-io-mode={io_mode}"] if io_mode and decoder.startswith("v4l2") else [])
-    return head + ["!", "h264parse", "!", *dec, "!", "video/x-raw,format=NV12"]
+    return head + ["!", parser, "!", *dec, "!", "video/x-raw,format=NV12"]
 
 
 def _interrupt_when_parent_dies() -> None:  # runs in the child before exec (Linux)
@@ -168,20 +175,50 @@ def nv12_to_bgr(buf, width: int, height: int, stride: int):
     return frame.reformat(format="bgr24", interpolation="POINT").to_ndarray()
 
 
+def probe_stream(source: str) -> tuple[int, int, float, int]:
+    """Read stream metadata, falling back to ffprobe when OpenCV lacks this camera codec."""
+    import cv2
+    probe = cv2.VideoCapture(source)
+    width, height = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = probe.get(cv2.CAP_PROP_FPS)
+    frame_count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    probe.release()
+    if width and height:
+        return width, height, fps, frame_count
+
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height,avg_frame_rate,nb_frames", "-of", "json", source],
+        env=SYSTEM_ENV, capture_output=True, text=True, timeout=15, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(f"cannot probe video stream (OpenCV and ffprobe failed): {result.stderr.strip()}")
+    import json
+    try:
+        stream = json.loads(result.stdout)["streams"][0]
+        width, height = int(stream["width"]), int(stream["height"])
+        rate = stream.get("avg_frame_rate", "0/1").split("/", 1)
+        fps = float(rate[0]) / float(rate[1]) if float(rate[1]) else 0.0
+        frame_count = int(stream.get("nb_frames", "0"))
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise RuntimeError("ffprobe returned incomplete video metadata") from exc
+    return width, height, fps, frame_count
+
+
 class HwCapture:
     _first = 0   # first frame of the running pipeline (a seek starts it at a keyframe); full frames count from it
     def __init__(self, source: str, *, decoder: str = "v4l2h264dec", io_mode: str | None = None, size: int = 0,
-                 hires_every: int = 0):
+                 hires_every: int = 0, codec: str = "H264"):
         """hires_every (with size, 8/11 slow lane): a second branch of the same decoder gives the full-resolution frame
         of every hires_every-th frame (GPU colour convert, videorate drops the rest before any copy) -> last_hires."""
-        import cv2
-        probe = cv2.VideoCapture(source)  # only the stream's size and rate
-        self.width, self.height = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.fps = probe.get(cv2.CAP_PROP_FPS)
-        self.frame_count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)   # tells a decoder failure from the file's end
+        codec = str(codec).upper()
+        if codec not in {"H264", "H265"}:
+            raise ValueError(f"unsupported source codec: {codec}")
+        self.codec = codec
+        self.parser = "h264parse" if codec == "H264" else "h265parse"
+        self.width, self.height, self.fps, self.frame_count = probe_stream(source)
         self._keyframes = None   # [(frame index, pts seconds)] of the file's keyframes, read on the first seek
         self._feeder = None      # ffmpeg feeding the decoder from a keyframe (seek), else None
-        probe.release()
         if not self.width or not self.height:
             raise RuntimeError(f"cannot read the size of {source}")
         self.source, self.decoder = source, decoder
@@ -194,7 +231,7 @@ class HwCapture:
             if self.hires_every < 1 or abs(rate - round(rate)) > 1e-6:
                 raise ValueError(f"hires_every {hires_every} must divide the source rate {self.fps}")
             self.hires_rate = round(rate)
-        self.head = gst_source(source, decoder, self.io_mode)
+        self.head = gst_source(source, decoder, self.io_mode, self.codec)
         self.chain = self.head + (transform_chain(size) if size else [])
         log = self._probe(self.chain)
         if size:
@@ -340,7 +377,7 @@ class HwCapture:
                 # 14/11: raw H.264 has no timestamps and Matroska rounds them to ms (333 ms < 1/3 s), so the
                 # full-resolution branch's videorate kept frame 6 instead of 5 after a seek; MPEG-TS ticks 1/90000 s
                 env=SYSTEM_ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            head = ["fdsrc", "fd=0", "!", demux, "!", *self.head[self.head.index("h264parse"):]]
+            head = ["fdsrc", "fd=0", "!", demux, "!", *self.head[self.head.index(self.parser):]]
             chain = head + self.chain[len(self.head):]
         # Frames go through their own pipe, never stdout: 13/11 on 252 qtic2vdec's library printed 64 KiB of log lines
         # ("QC2TargetSpec: Video Core Features...") to stdout ahead of the frames; every picture the model got was moved
